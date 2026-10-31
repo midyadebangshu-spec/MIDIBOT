@@ -1,10 +1,12 @@
-# MIDIBOT — Humanoid Robot Plan (v1.0)
+# MIDIBOT — Humanoid Robot Plan (v1.1)
+
+_v1.1 (Phase 1 done): actuators fixed to MyActuator RMD-X V4 models from the official datasheets; mass target revised to ~39 kg; see [MASS_BUDGET.md](MASS_BUDGET.md)._
 
 ## 1. Locked decisions
 
 | Decision | Choice |
 |---|---|
-| Height / mass | 1.30 m / ~35 kg target |
+| Height / mass | 1.31 m / 39.4 kg (model; was 35 kg before real actuator masses were known) |
 | Actuators | Research-grade quasi-direct-drive (QDD) BLDC with integrated drivers |
 | Hands | 5-finger dexterous hands |
 | Walking | LIPM + ZMP preview control + whole-body IK (CPU-friendly) |
@@ -19,27 +21,28 @@
 | Waist | yaw | 1 |
 | Arms (×2) | shoulder pitch/roll/yaw, elbow, wrist yaw/pitch/roll | 14 |
 | Head | pan, tilt | 2 |
-| Hands (×2) | 6 actuated each (thumb rotation, thumb bend, index, middle, ring, little); 12 joints each via mimic/linkage coupling | 12 actuated (24 joints) |
+| Hands (×2) | Inspire RH56DFQ: 6 actuated each (thumb rotation, thumb bend, index, middle, ring, little) + 6 linkage-coupled joints each | 12 actuated (24 joints) |
 | **Total** | | **41 actuated** |
 
-Approximate segment lengths (scaled from human proportions at 1.30 m, to be refined in CAD):
-thigh 0.30 m, shank 0.30 m, ankle height 0.06 m, foot 0.20 × 0.10 m, hip width 0.18 m,
-torso (pelvis→shoulder) 0.42 m, upper arm 0.22 m, forearm 0.20 m, shoulder width 0.34 m.
+Segment lengths (source of truth: `src/midibot_cad/cad/dims.py`):
+thigh 0.30 m, shank 0.30 m, ankle height 0.06 m, foot 0.22 × 0.11 m, hip width 0.18 m,
+pelvis→shoulder 0.355 m, upper arm 0.22 m, forearm 0.20 m, shoulder width 0.35 m, pelvis height 0.77 m.
 
 ## 3. Unit 1 — Locomotion & Movement Unit
 
 Owns the body, real-time control and **final safety authority**.
 
-### 3.1 Actuators (candidates — torque figures approximate, verify against datasheets)
+### 3.1 Actuators (selected; values from manufacturer datasheets)
 
-| Joints | Candidate | Approx. peak torque | Approx. mass |
+| Joints | Actuator | Rated / peak torque | Mass |
 |---|---|---|---|
-| Knee, hip pitch | MyActuator RMD-X10 / CubeMars AK80-64 class | 100–120 Nm | 0.9–1.2 kg |
-| Hip roll, hip yaw, ankle pitch/roll | CubeMars AK80-9 / AK70-10 class | 18–25 Nm (ankles via linkage for more) | 0.5–0.6 kg |
-| Waist yaw, shoulders, elbow | CubeMars AK60-6 / MyActuator RMD-X6 class | 9–20 Nm | 0.35–0.6 kg |
-| Wrist (3) | MyActuator RMD-X4 / Dynamixel XH540 class | 3–10 Nm | 0.2–0.35 kg |
-| Head pan/tilt | Dynamixel XM430-W350 | ~4 Nm | 0.08 kg |
-| Hands | Inspire RH56-class dexterous hand (6 linear micro-actuators, RS485) | ~10 N fingertip | ~0.55 kg per hand |
+| Hip pitch, knee (via push-rod) | MyActuator RMD-X10-P20-200 | 60 / 170 Nm | 1.64 kg |
+| Hip roll, waist yaw | MyActuator RMD-X8-P20-120 | 43 / 120 Nm | 1.40 kg |
+| Hip yaw, ankles (2 per leg), shoulder pitch/roll, elbow | MyActuator RMD-X6-P20-60 | 20 / 60 Nm | 0.82 kg |
+| Shoulder yaw | MyActuator RMD-X4-P36-36 | 10.5 / 34 Nm | 0.36 kg |
+| Wrist yaw/pitch/roll | ROBOTIS Dynamixel XH540-W270 | ~10.6 Nm stall | 0.165 kg |
+| Neck yaw, head pitch | ROBOTIS Dynamixel XM430-W350 | ~4.1 Nm stall | 0.082 kg |
+| Hands | Inspire RH56DFQ (6 linear micro-actuators) | ~10 N fingertip | ~0.54 kg per hand |
 
 Ankle pitch/roll will use a parallel two-motor push-rod linkage (motors mounted on the shank)
 to reduce distal mass — in simulation this is modelled as serial joints with equivalent limits.
@@ -71,7 +74,7 @@ Perception, intelligence, interaction. Sends **goals only**; never drives joints
 |---|---|
 | Compute | NVIDIA Jetson AGX Orin 64 GB (chest) |
 | Head vision | Intel RealSense D435i (stereo depth + RGB + IMU) |
-| 3D lidar | Livox Mid-360 (upper chest) |
+| 3D lidar | Livox Mid-360 (chest window, front) |
 | Wrist cameras (optional) | small global-shutter USB cameras |
 | Audio | ReSpeaker USB 4-mic array + speaker |
 | Network | Gigabit Ethernet to Unit 1, Wi-Fi 6 to operator |
@@ -108,17 +111,10 @@ every AI command. In simulation both units run as separate namespaces/processes.
 - **Mass properties:** datasheet masses for components, CAD-derived inertia for structure;
   totals tracked in a mass budget.
 
-### Mass budget (target)
+### Mass budget
 
-| Item | kg |
-|---|---|
-| Actuators (29 body) | 16.5 |
-| Hands (2) | 1.1 |
-| Structure (aluminium/CF) | 8.0 |
-| Battery + BMS | 3.5 |
-| Computers + sensors | 2.5 |
-| Shells, wiring, misc. | 3.4 |
-| **Total** | **35.0** |
+Generated from the model: **39.4 kg** (actuators 22.5, structure 10.0, power 3.7, electronics 1.7,
+hands 1.1, sensors 0.4). Full breakdown: [MASS_BUDGET.md](MASS_BUDGET.md).
 
 ## 7. Repository layout
 
@@ -143,13 +139,19 @@ MIDIBOT/
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| 1. Model | CAD, meshes, URDF/Xacro with correct mass/inertia | Robot loads in Gazebo, holds pose with joints locked, mass ≈ 35 kg |
+| 1. Model ✅ | CAD, meshes, URDF/Xacro with correct mass/inertia | Robot loads in Gazebo, holds pose with joints locked, foot load = model weight |
 | 2. Control | ros2_control for all 41 actuators, standing balance | Stands unassisted, recovers from small pushes |
 | 3. Walking | ZMP walking driven by `/loco/cmd_vel` | Walks forward/backward, turns, stops on flat ground |
 | 4. AI Unit | Sensors, SLAM, navigation, MoveIt reach + 5-finger grasp | Navigates to a goal; picks up an object from a table |
 | 5. Integration | Command → LLM planner → behavior tree → actions | "Bring me the cup" works end-to-end in sim |
 
-## 9. Known risks
+## 9. Simulation notes
+- Physics engine: DART (Gazebo default). DART can't enforce URDF `<mimic>` constraints, so the
+  finger linkages are reproduced by `midibot_control/hand_coupler` (6 commands → 12 joints per hand).
+  Bullet-Featherstone supports mimic but was tested and rejected: the robot fell over and the foot F/T sensors didn't work.
+- Rendering sensors (camera, lidar) run on CPU here; with them on, the sim runs at ~0.3× real time.
+
+## 10. Known risks
 - ZMP walking is sensitive to mass/inertia accuracy — Phase 1 mass properties matter.
 - 41 actuators + dexterous hands make Gazebo slower than real time on CPU; hands may be simplified
   (fewer collision shapes) during walking tests.
