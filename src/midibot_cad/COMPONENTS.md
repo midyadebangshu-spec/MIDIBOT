@@ -12,8 +12,8 @@ can be committed to this repository.
 | Livox Mid-360 | chest lidar | Official STEP → mesh | livoxtech.com (DJI CDN) | No: fetched |
 | Inspire RH56DFQ hand | 5-finger hands | Meshes + kinematics + inertials | unitreerobotics/unitree_ros (BSD-3-Clause) | **Yes** (`meshes/hands`, `data/inspire_hand_*.json`) |
 | Intel RealSense D435i | head RGB-D camera | Mesh | IntelRealSense/realsense-ros (Apache-2.0) | **Yes** (`meshes/sensors/d435.stl`) |
-| ROBOTIS Dynamixel XH540-W270 | wrists | Placeholder box, datasheet size | ROBOTIS CAD is on www.robotis.com (blocked here) | Placeholder |
-| ROBOTIS Dynamixel XM430-W350 | neck | Placeholder box, datasheet size | same as above | Placeholder |
+| ROBOTIS Dynamixel XH540-W270 | wrists | Official STEP → mesh (manual download) | [e-Manual](https://emanual.robotis.com/docs/en/dxl/x/xh540-w270/) → `XM,H,D-540.N101.I101.STP` | No: `--local dxl_xh540=<file>`; box placeholder until then |
+| ROBOTIS Dynamixel XM430-W350 | neck | Official STEP → mesh (manual download) | [e-Manual](https://emanual.robotis.com/docs/en/dxl/x/xm430-w350/) → `x-430_idle.stp` | No: `--local dxl_xm430=<file>`; box placeholder until then |
 | NVIDIA Jetson AGX Orin 64GB | AI Unit computer (chest) | Inertial only (inside shell) | developer.nvidia.com needs login | Placeholder |
 | Intel NUC | Locomotion computer (pelvis) | Inertial only | - | Placeholder |
 | VectorNav VN-100 | pelvis IMU | Inertial only | vectornav.com (download behind script) | Placeholder |
@@ -30,6 +30,14 @@ pip install cadquery trimesh fast-simplification
 python3 src/midibot_cad/scripts/fetch_vendor_cad.py      # writes midibot_description/meshes/vendor/
 colcon build --symlink-install
 ros2 launch midibot_gazebo sim.launch.py vendor_meshes:=true
+```
+
+ROBOTIS only serves its CAD to interactive browser downloads, so the two Dynamixel STEP files have to be
+downloaded by hand from the e-Manual pages linked above, then converted and enabled with:
+
+```bash
+python3 src/midibot_cad/scripts/fetch_vendor_cad.py --only dxl_xh540 dxl_xm430 --local dxl_xh540=~/Downloads/XM,H,D-540.N101.I101.STP dxl_xm430=~/Downloads/x-430_idle.stp
+ros2 launch midibot_gazebo sim.launch.py vendor_meshes:=true dxl_meshes:=true
 ```
 
 Without the vendor meshes the actuators render as datasheet-sized cylinders; physics is identical

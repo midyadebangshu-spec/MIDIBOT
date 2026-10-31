@@ -7,12 +7,15 @@ redistribution). Run this script once after cloning; the URDF then picks the
 meshes up with `vendor_meshes:=true`.
 
 Normalization: the mesh is converted to metres, centred on its bounding box,
-and rotated so that the actuator output axis (the bounding-box dimension that
-differs from the other two) lies along +Z. Sensors keep their native frame and
-are only centred.
+and rotated so that the actuator output axis lies along +Z. For cylindrical
+actuators the axis is the bounding-box dimension that differs from the other
+two; for Dynamixel servos ("horn" mode) it is the axis of the largest circular
+edge of the output horn, and the mesh is centred on that axis. Sensors keep
+their native frame and are only centred.
 
 Requires: cadquery, trimesh, fast-simplification  (pip install ...)
 Usage:   python3 fetch_vendor_cad.py [--out DIR] [--keep-step DIR]
+                                   [--local dxl_xh540=path.stp dxl_xm430=path.stp]
 """
 import argparse
 import io
@@ -29,6 +32,9 @@ DEFAULT_OUT = HERE.parents[1] / "midibot_description" / "meshes" / "vendor"
 
 MYACT = "https://www.myactuator.com/_files/archives/"
 LIVOX = "https://terra-1-g.djicdn.com/65c028cd298f4669a7f0e40e50ba1131/"
+# ROBOTIS only serves CAD to interactive browser downloads: download these by hand from the
+# e-Manual pages and pass them with --local (see COMPONENTS.md).
+ROBOTIS = "manual:"
 
 # name -> (url, kind, member-suffix-in-zip or None, normalize mode)
 COMPONENTS = {
@@ -37,6 +43,10 @@ COMPONENTS = {
     "rmd_x6_p20_60": (MYACT + "cab28a_4231acdf891b41f3a56bb690f4c1d312.zip", "zip", ".STEP", "axis"),
     "rmd_x4_p36_36": (MYACT + "cab28a_dcb58d860356468d817e06ffe8d248af.zip", "zip", ".STEP", "axis"),
     "livox_mid360": (LIVOX + "Mid360/mid-360-asm.stp", "step", None, "center"),
+    # https://emanual.robotis.com/docs/en/dxl/x/xh540-w270/ -> "XM,H,D-540.N101.I101.STP"
+    "dxl_xh540": (ROBOTIS + "2084", "step", None, "horn"),
+    # https://emanual.robotis.com/docs/en/dxl/x/xm430-w350/ -> "x-430_idle.stp"
+    "dxl_xm430": (ROBOTIS + "158", "step", None, "horn"),
 }
 
 TARGET_FACES = 20000
@@ -59,21 +69,54 @@ def step_bytes(name, url, kind, suffix):
         return z.read(members[0])
 
 
-def step_to_mesh(step_path: pathlib.Path):
+def horn_axis(shape):
+    """Axis (unit vector) and centre (metres) of the largest 6-13 mm radius circle."""
+    best = None
+    for e in shape.edges().vals():
+        if e.geomType() != "CIRCLE":
+            continue
+        r = e.radius()
+        if 6.0 <= r <= 13.0 and (best is None or r > best[0]):
+            c = e.Center()
+            n = e._geomAdaptor().Circle().Axis().Direction()
+            best = (r, np.array([c.x, c.y, c.z]) / 1000.0, np.array([n.X(), n.Y(), n.Z()]))
+    if best is None:
+        raise RuntimeError("no horn circle found")
+    return best[1], best[2]
+
+
+def step_to_mesh(step_path: pathlib.Path, mode="axis"):
     import cadquery as cq
     import trimesh
 
     shape = cq.importers.importStep(str(step_path))
+    horn = horn_axis(shape) if mode == "horn" else None
     with tempfile.TemporaryDirectory() as td:
         stl = pathlib.Path(td) / "m.stl"
         cq.exporters.export(shape, str(stl), tolerance=0.3, angularTolerance=0.3)
         mesh = trimesh.load(str(stl), force="mesh")
     mesh.apply_scale(0.001)  # STEP files are in millimetres
-    return mesh
+    return mesh, horn
 
 
-def normalize(mesh, mode):
+def normalize(mesh, mode, horn=None):
     import trimesh
+
+    if mode == "horn":
+        centre, axis = horn
+        axis = axis / np.linalg.norm(axis)
+        # rotate horn axis onto +Z, then put the axis through the origin (centred along Z)
+        z = np.array([0.0, 0.0, 1.0])
+        v = np.cross(axis, z)
+        if np.linalg.norm(v) < 1e-9:
+            R = np.eye(4) if axis[2] > 0 else trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0])
+        else:
+            R = trimesh.transformations.rotation_matrix(np.arccos(np.clip(axis @ z, -1, 1)), v)
+        mesh.apply_transform(R)
+        c = (R[:3, :3] @ centre)
+        lo, hi = mesh.bounds
+        mesh.apply_translation([-c[0], -c[1], -(lo[2] + hi[2]) / 2.0])
+        return mesh
 
     lo, hi = mesh.bounds
     mesh.apply_translation(-(lo + hi) / 2.0)
@@ -101,7 +144,10 @@ def main():
     ap.add_argument("--keep-step", type=pathlib.Path, default=None,
                     help="also save the original STEP files to this directory")
     ap.add_argument("--only", nargs="*", default=None)
+    ap.add_argument("--local", nargs="*", default=[], metavar="NAME=PATH",
+                    help="use a STEP file you downloaded yourself instead of fetching")
     args = ap.parse_args()
+    local = dict(item.split("=", 1) for item in args.local)
     args.out.mkdir(parents=True, exist_ok=True)
 
     failed = []
@@ -109,8 +155,15 @@ def main():
         if args.only and name not in args.only:
             continue
         try:
-            print(f"[{name}] downloading", flush=True)
-            data = step_bytes(name, url, kind, suffix)
+            if name in local:
+                data = pathlib.Path(local[name]).read_bytes()
+            elif url.startswith("manual:"):
+                print(f"[{name}] skipped: download by hand and pass --local {name}=<file> "
+                      "(see COMPONENTS.md)")
+                continue
+            else:
+                print(f"[{name}] downloading", flush=True)
+                data = step_bytes(name, url, kind, suffix)
             with tempfile.TemporaryDirectory() as td:
                 sp = pathlib.Path(td) / f"{name}.step"
                 sp.write_bytes(data)
@@ -118,7 +171,8 @@ def main():
                     args.keep_step.mkdir(parents=True, exist_ok=True)
                     (args.keep_step / f"{name}.step").write_bytes(data)
                 print(f"[{name}] converting STEP -> mesh", flush=True)
-                mesh = decimate(normalize(step_to_mesh(sp), mode))
+                mesh, horn = step_to_mesh(sp, mode)
+                mesh = decimate(normalize(mesh, mode, horn))
             dst = args.out / f"{name}.stl"
             mesh.export(str(dst))
             e = mesh.extents * 1000

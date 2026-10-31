@@ -4,6 +4,7 @@ Args:
   headless:=true|false   run the Gazebo server only (default true)
   sensors:=true|false    enable rendering sensors (RGB-D camera, lidar)
   vendor_meshes:=true|false  use vendor CAD meshes (run midibot_cad/scripts/fetch_vendor_cad.py first)
+  dxl_meshes:=true|false     use Dynamixel CAD meshes (downloaded by hand, see COMPONENTS.md)
   world:=<path.sdf>
 """
 from launch import LaunchDescription
@@ -25,7 +26,8 @@ def generate_launch_description():
         "xacro ", PathJoinSubstitution([desc_pkg, "urdf", "midibot.urdf.xacro"]),
         " sim:=true controllers_file:=", controllers,
         " sensors:=", LaunchConfiguration("sensors"),
-        " vendor_meshes:=", LaunchConfiguration("vendor_meshes")]), value_type=str)
+        " vendor_meshes:=", LaunchConfiguration("vendor_meshes"),
+        " dxl_meshes:=", LaunchConfiguration("dxl_meshes")]), value_type=str)
 
     gz_args = PythonExpression([
         "'-r -v 2 ' + ('-s --headless-rendering ' if '", headless, "' == 'true' else '') + '",
@@ -58,6 +60,7 @@ def generate_launch_description():
         DeclareLaunchArgument("headless", default_value="true"),
         DeclareLaunchArgument("sensors", default_value="true"),
         DeclareLaunchArgument("vendor_meshes", default_value="false"),
+        DeclareLaunchArgument("dxl_meshes", default_value="false"),
         DeclareLaunchArgument("world", default_value=PathJoinSubstitution([gz_pkg, "worlds", "flat.sdf"])),
         DeclareLaunchArgument("spawn_z", default_value="0.775"),
         gazebo, rsp, spawn, bridge, controllers_after_spawn,

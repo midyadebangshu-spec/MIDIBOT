@@ -81,8 +81,11 @@ python3 src/midibot_cad/scripts/fetch_vendor_cad.py
 | `/ai/camera/{image,depth,camera_info}` | `sensor_msgs/Image`, `CameraInfo` | head RGB-D |
 | `/ai/lidar/points` | `sensor_msgs/PointCloud2` | chest lidar |
 
-## Licenses
+## License
 
-A license for MIDIBOT's own code and CAD hasn't been chosen yet (the package manifests say MIT as a placeholder). The hand meshes come from unitreerobotics/unitree_ros (BSD-3-Clause), and the
-RealSense mesh from IntelRealSense/realsense-ros (Apache-2.0). Vendor STEP files are downloaded by the user
-and not redistributed.
+**Proprietary. All rights reserved.** See [LICENSE](LICENSE). No use, copying or distribution without
+the copyright holder's written permission.
+
+Third-party material (Inspire hand meshes, BSD-3-Clause; RealSense mesh, Apache-2.0) stays under its own
+license; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Vendor STEP files are downloaded by each user
+and never redistributed.

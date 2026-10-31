@@ -11,6 +11,6 @@ setup(
     maintainer="MIDIBOT team",
     maintainer_email="midyadebangshu@gmail.com",
     description="MIDIBOT control nodes",
-    license="MIT",
+    license="Proprietary",
     entry_points={"console_scripts": ["hand_coupler = midibot_control.hand_coupler:main"]},
 )

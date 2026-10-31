@@ -4,7 +4,7 @@
   <version>0.1.0</version>
   <description>MIDIBOT control nodes (Locomotion &amp; Movement Unit): hand coupler, later walking/balance.</description>
   <maintainer email="midyadebangshu@gmail.com">MIDIBOT team</maintainer>
-  <license>MIT</license>
+  <license>Proprietary</license>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>trajectory_msgs</exec_depend>
