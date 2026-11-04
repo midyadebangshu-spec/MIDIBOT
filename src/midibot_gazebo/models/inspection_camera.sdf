@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="inspection_camera">
+    <static>true</static>
+    <link name="link">
+      <sensor name="inspection_camera" type="camera">
+        <always_on>true</always_on>
+        <update_rate>2</update_rate>
+        <topic>inspection/image</topic>
+        <camera>
+          <horizontal_fov>0.75</horizontal_fov>
+          <image><width>1000</width><height>1200</height><format>R8G8B8</format></image>
+          <clip><near>0.1</near><far>20</far></clip>
+        </camera>
+      </sensor>
+    </link>
+  </model>
+</sdf>

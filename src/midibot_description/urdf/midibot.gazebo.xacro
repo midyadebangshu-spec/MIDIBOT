@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<!-- Gazebo Harmonic extensions for MIDIBOT: ros2_control plugin, sensors, contact properties. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="midibot_gazebo" params="controllers_file sensors">
+
+    <gazebo>
+      <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>${controllers_file}</parameters>
+      </plugin>
+    </gazebo>
+
+    <!-- feet: high friction, stiff contact -->
+    <xacro:macro name="foot_contact" params="link">
+      <gazebo reference="${link}">
+        <collision>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <contact><ode><kp>1e6</kp><kd>100</kd><min_depth>0.001</min_depth></ode></contact>
+          </surface>
+        </collision>
+      </gazebo>
+    </xacro:macro>
+    <xacro:foot_contact link="left_foot"/>
+    <xacro:foot_contact link="right_foot"/>
+
+    <!-- Unit 1: pelvis IMU (VectorNav VN-100), 400 Hz -->
+    <gazebo reference="pelvis">
+      <sensor name="pelvis_imu" type="imu">
+        <always_on>true</always_on>
+        <update_rate>400</update_rate>
+        <topic>imu</topic>
+        <gz_frame_id>imu_link</gz_frame_id>
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><stddev>0.0005</stddev></noise></x>
+            <y><noise type="gaussian"><stddev>0.0005</stddev></noise></y>
+            <z><noise type="gaussian"><stddev>0.0005</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><stddev>0.01</stddev></noise></x>
+            <y><noise type="gaussian"><stddev>0.01</stddev></noise></y>
+            <z><noise type="gaussian"><stddev>0.01</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
+      </sensor>
+    </gazebo>
+
+    <!-- foot force/torque sensing (stand-in for the load cells) -->
+    <xacro:macro name="foot_ft" params="side">
+      <gazebo reference="${side}_ankle_roll_joint">
+        <sensor name="${side}_foot_ft" type="force_torque">
+          <always_on>true</always_on>
+          <update_rate>500</update_rate>
+          <topic>${side}_foot_ft</topic>
+          <force_torque><frame>child</frame><measure_direction>child_to_parent</measure_direction></force_torque>
+        </sensor>
+      </gazebo>
+    </xacro:macro>
+    <xacro:foot_ft side="left"/>
+    <xacro:foot_ft side="right"/>
+
+    <!-- Unit 2: rendering sensors (need a working rendering backend) -->
+    <xacro:if value="${sensors}">
+      <!-- Intel RealSense D435i (RGB-D) -->
+      <gazebo reference="head">
+        <sensor name="head_camera" type="rgbd_camera">
+          <pose>0.0925 0 0.055 0 0 0</pose>
+          <always_on>true</always_on>
+          <update_rate>15</update_rate>
+          <topic>camera</topic>
+          <gz_frame_id>camera_optical_frame</gz_frame_id>
+          <camera>
+            <horizontal_fov>1.5184</horizontal_fov>
+            <image><width>640</width><height>480</height><format>R8G8B8</format></image>
+            <clip><near>0.1</near><far>10.0</far></clip>
+          </camera>
+        </sensor>
+      </gazebo>
+      <!-- Livox Mid-360 (360 deg x 59 deg, approximated as a spinning-pattern lidar) -->
+      <gazebo reference="torso">
+        <sensor name="chest_lidar" type="gpu_lidar">
+          <pose>0.095 0 0.235 0 0 0</pose>
+          <always_on>true</always_on>
+          <update_rate>10</update_rate>
+          <topic>lidar</topic>
+          <gz_frame_id>lidar_link</gz_frame_id>
+          <lidar>
+            <scan>
+              <horizontal><samples>720</samples><min_angle>-3.14159</min_angle><max_angle>3.14159</max_angle></horizontal>
+              <vertical><samples>32</samples><min_angle>-0.1222</min_angle><max_angle>0.9076</max_angle></vertical>
+            </scan>
+            <range><min>0.1</min><max>40.0</max><resolution>0.01</resolution></range>
+          </lidar>
+        </sensor>
+      </gazebo>
+    </xacro:if>
+
+  </xacro:macro>
+</robot>

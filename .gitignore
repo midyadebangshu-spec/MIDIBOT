@@ -4,3 +4,5 @@ log/
 __pycache__/
 *.pyc
 .venv/
+# vendor CAD (no redistribution license) - fetch with src/midibot_cad/scripts/fetch_vendor_cad.py
+src/midibot_description/meshes/vendor/*.stl

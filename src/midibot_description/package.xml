@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>midibot_description</name>
+  <version>0.1.0</version>
+  <description>MIDIBOT humanoid: URDF/Xacro, meshes and ros2_control configuration.</description>
+  <maintainer email="midyadebangshu@gmail.com">MIDIBOT team</maintainer>
+  <license>Proprietary</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>gz_ros2_control</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>imu_sensor_broadcaster</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

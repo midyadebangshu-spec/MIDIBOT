@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>midibot_gazebo</name>
+  <version>0.1.0</version>
+  <description>Gazebo Harmonic worlds and launch files for the MIDIBOT humanoid.</description>
+  <maintainer email="midyadebangshu@gmail.com">MIDIBOT team</maintainer>
+  <license>Proprietary</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>midibot_description</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>midibot_control</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
