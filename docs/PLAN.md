@@ -140,7 +140,7 @@ MIDIBOT/
 | Phase | Deliverable | Done when |
 |---|---|---|
 | 1. Model ✅ | CAD, meshes, URDF/Xacro with correct mass/inertia | Robot loads in Gazebo, holds pose with joints locked, foot load = model weight |
-| 2. Control | ros2_control for all 41 actuators, standing balance | Stands unassisted, recovers from small pushes |
+| 2. Control ✅ | ros2_control for all 41 actuators, standing balance | Stands unassisted, recovers from small pushes |
 | 3. Walking | ZMP walking driven by `/loco/cmd_vel` | Walks forward/backward, turns, stops on flat ground |
 | 4. AI Unit | Sensors, SLAM, navigation, MoveIt reach + 5-finger grasp | Navigates to a goal; picks up an object from a table |
 | 5. Integration | Command → LLM planner → behavior tree → actions | "Bring me the cup" works end-to-end in sim |
@@ -151,7 +151,24 @@ MIDIBOT/
   Bullet-Featherstone supports mimic but was tested and rejected: the robot fell over and the foot F/T sensors didn't work.
 - Rendering sensors (camera, lidar) run on CPU here; with them on, the sim runs at ~0.3× real time.
 
-## 10. Known risks
+## 10. Phase 2 results
+- Body joints run in **torque mode**: `pid_controller` computes PD torque (clamped to each actuator's
+  peak) from a position/velocity reference streamed by the balance controller.
+- **Balance controller** (`midibot_control/balance_controller`, Pinocchio): CoM, support centre and CoP
+  in a gravity-aligned frame; ankle strategy (CoM over support, PI+D) with hip offsets that keep the
+  pelvis level, plus hip-pitch tilt feedback; smooth crouch to a ready stance computed so the CoM sits
+  over the feet; fall detection.
+- **Push test**: recovers from 60 N × 0.2 s (~12 N·s, ~0.3 m/s) pushes in all four directions (peak tilt
+  3–7°, back under 3° within ~0.6 s). Fails at 15 N·s forward, in line with the ~16 N·s theoretical limit
+  of an ankle/hip strategy without stepping. Larger pushes need stepping (Phase 3).
+- Lesson learned: Python control nodes must avoid high-rate, large ROS messages. A subscription to the
+  500 Hz 29-DOF controller state starved the loop to ~6 Hz, which looked like control instability
+  for a long time. Gazebo's 1 kHz `/clock` is also avoided in control nodes (timing comes from message stamps).
+- Lesson learned: posture transitions must start from the controller's current *setpoints*, not from the
+  measured joint angles. Under load the joints sag, and that offset is what produces the holding torque.
+  Restarting the setpoint at the measured angle removes the torque and tips the robot.
+
+## 11. Known risks
 - ZMP walking is sensitive to mass/inertia accuracy — Phase 1 mass properties matter.
 - 41 actuators + dexterous hands make Gazebo slower than real time on CPU; hands may be simplified
   (fewer collision shapes) during walking tests.

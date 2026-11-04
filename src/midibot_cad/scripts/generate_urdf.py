@@ -407,7 +407,7 @@ def write_urdf():
             vel = j.vel if j.vel is not None else ACT[j.act]["vel"]
             out.append(f'    <axis xyz="{f3(ax)}"/><limit lower="{j.lim[0]:.4f}" upper="{j.lim[1]:.4f}" '
                        f'effort="{eff:.2f}" velocity="{vel:.3f}"/>')
-            damping = 0.05 if "hand" in (j.group or "") else 0.5
+            damping = joint_damping(j.name, j.group)
             out.append(f'    <dynamics damping="{damping}" friction="0.0"/>')
             if j.mimic:
                 m = j.mimic
@@ -439,6 +439,31 @@ def write_urdf():
     out.append('  <xacro:midibot_ros2_control sim="$(arg sim)"/>')
     out.append("</robot>")
     (DESC / "urdf" / "midibot.urdf.xacro").write_text("\n".join(out) + "\n")
+
+
+def joint_damping(name, group):
+    """Passive viscous joint damping (Nms/rad) in the URDF.
+
+    Kept small: DART applies it explicitly, and large values on the light foot links (e.g. 25 at the
+    ankles) were measured to blow up the simulation at spawn. Stance damping comes from the controller.
+    """
+    if group and "hand" in group:
+        return 0.05
+    return 0.5
+
+
+def pd_gains(name):
+    """Joint PD gains (Nm/rad, Nms/rad) for torque-mode control, sized per actuator class."""
+    # Values give a stable passive stance. Higher leg gains were tried while the balance loop was starved
+    # by a CPU problem (since fixed), so those results are inconclusive; re-tuning upwards is possible.
+    table = [("hip_pitch", 450, 10), ("knee", 450, 10), ("hip_roll", 400, 8), ("hip_yaw", 150, 3),
+             ("ankle_pitch", 300, 6), ("ankle_roll", 200, 4), ("waist", 300, 6),
+             ("shoulder_pitch", 120, 2.5), ("shoulder_roll", 120, 2.5), ("elbow", 100, 2.0),
+             ("shoulder_yaw", 50, 1.0), ("wrist", 12, 0.25), ("neck", 6, 0.12), ("head", 6, 0.12)]
+    for key, kp, kd in table:
+        if key in name:
+            return kp, kd
+    raise KeyError(name)
 
 
 def write_ros2_control():
@@ -484,11 +509,29 @@ def write_ros2_control():
          "controller_manager:", "  ros__parameters:", "    update_rate: 500", "    use_sim_time: true", "",
          "    joint_state_broadcaster:", "      type: joint_state_broadcaster/JointStateBroadcaster",
          "    imu_sensor_broadcaster:", "      type: imu_sensor_broadcaster/IMUSensorBroadcaster"]
+    # broadcasters at 100 Hz: plenty for the Python control nodes and keeps their message load low
     for g in groups:
-        y += [f"    {g}_controller:", "      type: joint_trajectory_controller/JointTrajectoryController"]
-    y += ["", "imu_sensor_broadcaster:", "  ros__parameters:", "    sensor_name: pelvis_imu",
+        ctype = "pid_controller/PidController" if g == "body" else \
+            "joint_trajectory_controller/JointTrajectoryController"
+        y += [f"    {g}_controller:", f"      type: {ctype}"]
+    y += ["", "joint_state_broadcaster:", "  ros__parameters:", "    update_rate: 100", "",
+          "imu_sensor_broadcaster:", "  ros__parameters:", "    update_rate: 100", "    sensor_name: pelvis_imu",
           "    frame_id: imu_link", ""]
     for g, names in groups.items():
+        if g == "body":
+            # Body: torque-mode joint PD (pid_controller) tracking a streamed position/velocity reference
+            # on /body_controller/reference (no trajectory interpolation between the streamed setpoints).
+            y += ["body_controller:", "  ros__parameters:", "    dof_names:"] + [f"      - {n}" for n in names]
+            y += ["    command_interface: effort", "    reference_and_state_interfaces: [position, velocity]",
+                  "    set_current_state_as_first_setpoint: true", "    gains:"]
+            for n in names:
+                kp, kd = pd_gains(n)
+                eff = next(j for j in joints if j.name == n)
+                tmax = eff.effort if eff.effort is not None else ACT[eff.act]["peak"]
+                y += [f"      {n}: {{p: {float(kp)}, i: 0.0, d: {float(kd)}, "
+                      f"u_clamp_max: {tmax:.1f}, u_clamp_min: {-tmax:.1f}}}"]
+            y += [""]
+            continue
         y += [f"{g}_controller:", "  ros__parameters:", "    joints:"] + [f"      - {n}" for n in names]
         y += ["    command_interfaces: [position]", "    state_interfaces: [position, velocity]",
               "    allow_partial_joints_goal: true", "    open_loop_control: false",

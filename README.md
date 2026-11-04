@@ -2,7 +2,9 @@
 
 A 1.31 m, 39 kg humanoid robot with 41 actuated joints, simulated in ROS 2 Jazzy and Gazebo Harmonic.
 
-![MIDIBOT in Gazebo](docs/images/midibot_gazebo.png)
+| Posed (Phase 1) | Balancing in its ready stance (Phase 2) |
+|---|---|
+| ![MIDIBOT posed in Gazebo](docs/images/midibot_gazebo.png) | ![MIDIBOT balancing](docs/images/midibot_balancing.png) |
 
 MIDIBOT is split into two units:
 
@@ -19,8 +21,8 @@ for the mass breakdown and actuator assignment.
 | Phase | State |
 |---|---|
 | 1. Model: CAD, meshes, URDF, mass properties | ✅ done |
-| 2. Control: ros2_control effort control, standing balance | next |
-| 3. ZMP walking | planned |
+| 2. Control: torque-mode joint control, standing balance, push recovery | ✅ done |
+| 3. ZMP walking | next |
 | 4. AI Unit: sensors, SLAM, navigation, grasping | planned |
 | 5. Integration: command → LLM planner → behaviour tree | planned |
 
@@ -31,7 +33,7 @@ src/
 ├── midibot_cad/          # CadQuery structure, vendor CAD fetcher, URDF generator (not a ROS package)
 ├── midibot_description/  # URDF/Xacro, meshes, ros2_control + controller config
 ├── midibot_gazebo/       # Gazebo world, sim launch, bridge config, check + snapshot tools
-└── midibot_control/      # control nodes (hand coupler; walking and balance come later)
+└── midibot_control/      # control nodes: balance controller, hand coupler (walking comes in Phase 3)
 ```
 
 ## Quick start (Ubuntu 24.04, ROS 2 Jazzy)
@@ -56,7 +58,18 @@ Run the simulation (`headless:=false` opens the Gazebo GUI):
 ros2 launch midibot_gazebo sim.launch.py headless:=false
 ```
 
-In a second terminal, run the Phase 1 acceptance check:
+The robot crouches into its ready stance and the balance controller takes over. In a second terminal,
+run the Phase 2 acceptance test (quiet stance, then 60 N pushes for 0.2 s from four directions):
+
+```bash
+ros2 run midibot_gazebo push_test.py
+```
+
+The Phase 1 model check expects the zero pose, so it runs with the balance controller off:
+
+```bash
+ros2 launch midibot_gazebo sim.launch.py balance:=false
+```
 
 ```bash
 ros2 run midibot_gazebo check_model.py
@@ -69,11 +82,14 @@ Optional: download the official vendor CAD (motors, lidar) for realistic visuals
 python3 src/midibot_cad/scripts/fetch_vendor_cad.py
 ```
 
-## Interfaces (Phase 1)
+## Interfaces
 
 | Topic / action | Type | Unit |
 |---|---|---|
-| `/body_controller/follow_joint_trajectory` | `control_msgs/FollowJointTrajectory` | 29 body joints |
+| `/loco/mode` | `std_msgs/String`: `stand` (ready stance + balance) or `zero` | balance controller |
+| `/loco/status` | `std_msgs/String`: `WAIT_STATE`, `TRANSITION`, `BALANCING`, `FALLEN` | balance controller |
+| `/loco/com`, `/loco/cop`, `/loco/support_center` | `geometry_msgs/PointStamped` (gravity-aligned pelvis frame) | balance controller |
+| `/body_controller/reference` | `control_msgs/MultiDOFCommand` (all 29 body joints; position + velocity) | torque-mode joint PD; written by the balance controller |
 | `/loco/{left,right}_hand/command` | `std_msgs/Float64MultiArray` (6 values: thumb yaw, thumb pitch, index, middle, ring, pinky) | hands |
 | `/joint_states` | `sensor_msgs/JointState` | all 53 joints |
 | `/imu_sensor_broadcaster/imu` | `sensor_msgs/Imu` | pelvis IMU |

@@ -5,10 +5,12 @@ Args:
   sensors:=true|false    enable rendering sensors (RGB-D camera, lidar)
   vendor_meshes:=true|false  use vendor CAD meshes (run midibot_cad/scripts/fetch_vendor_cad.py first)
   dxl_meshes:=true|false     use Dynamixel CAD meshes (downloaded by hand, see COMPONENTS.md)
+  balance:=true|false     run the standing balance controller (Phase 2)
   world:=<path.sdf>
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
@@ -58,11 +60,17 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("headless", default_value="true"),
+        DeclareLaunchArgument("balance", default_value="true"),
         DeclareLaunchArgument("sensors", default_value="true"),
         DeclareLaunchArgument("vendor_meshes", default_value="false"),
         DeclareLaunchArgument("dxl_meshes", default_value="false"),
         DeclareLaunchArgument("world", default_value=PathJoinSubstitution([gz_pkg, "worlds", "flat.sdf"])),
         DeclareLaunchArgument("spawn_z", default_value="0.775"),
         gazebo, rsp, spawn, bridge, controllers_after_spawn,
-        Node(package="midibot_control", executable="hand_coupler", parameters=[{"use_sim_time": True}]),
+        # /clock_raw (every physics step) -> /clock at 100 Hz wall
+
+        # control nodes stay on wall time: subscribing to the 1 kHz /clock costs rclpy tens of % CPU
+        Node(package="midibot_control", executable="hand_coupler"),
+        Node(package="midibot_control", executable="balance_controller", output="screen",
+             condition=IfCondition(LaunchConfiguration("balance"))),
     ])
