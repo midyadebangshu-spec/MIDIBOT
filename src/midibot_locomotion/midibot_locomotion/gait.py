@@ -21,16 +21,16 @@ from .preview import PreviewAxis, PreviewGains
 class GaitParams:
     zc: float = 0.60            # CoM height above the ground (m)
     dt: float = 0.01            # pattern generator sample time (s)
-    t_ss: float = 0.40          # single support time (s)
+    t_ss: float = 0.30          # single support time (s)
     t_ds: float = 0.20          # double support time between steps (s)
     t_ds_first: float = 0.60    # longer weight shift before the first step after standing (s)
     t_hold: float = 1.0         # initial standing time before the first step (s)
-    step_height: float = 0.04   # swing foot apex (m)
-    foot_width: float = 0.18    # nominal distance between the soles' centres (m)
+    step_height: float = 0.03   # swing foot apex (m)
+    foot_width: float = 0.15    # nominal distance between the soles' centres (m)
     max_dx: float = 0.12        # per-step limits (m, m, rad)
     max_dy: float = 0.05
     max_dyaw: float = 0.20
-    min_width: float = 0.14     # feet never closer than this laterally (m)
+    min_width: float = 0.12     # feet never closer than this laterally (m)
     max_vx: float = 0.15        # command limits (m/s, m/s, rad/s)
     max_vy: float = 0.08
     max_wz: float = 0.35

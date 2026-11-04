@@ -183,8 +183,25 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
   joints stay >0.02 rad from limits and <60 % of the velocity limits, the whole-body CoM follows the LIPM
   CoM within 2 mm, and the ZMP from full-body inverse dynamics (RNEA) stays inside the support box
   (forward, backward, turn, sidestep). This is kinematic/inverse-dynamics evidence only.
-- Acceptance: `ros2 run midibot_gazebo walk_test.py` (forward, backward, turn, stop). **Not run yet**: it needs
-  the full sim stack (ros2_control, gz_ros2_control), which the development machine lacked.
+- Acceptance: `ros2 run midibot_gazebo walk_test.py` (forward, backward, turn, stop). **Currently FAILS**
+  (first runs on 2026-11-04); `push_test.py` (Phase 2) still passes.
+- Simulation findings so far:
+  - Standing under the walk pattern is steady (tilt < 0.5 deg). Walking starts and takes 3-5 steps
+    (0.25-0.42 m), then rolls towards the outside of the stance foot and falls.
+  - The leg joint PD gains (hip roll 400, ankle roll 200 Nm/rad ...) are too soft for single support: the
+    stance leg sags ~4-7 deg under the lateral load. Scaling the leg gains by 2.5 at runtime (stable standing;
+    4x was not) was the biggest single improvement (second-step fall -> 3-5 steps). Not baked into
+    `generate_urdf.py` `pd_gains` yet (the generator needs CadQuery, not available on the dev box).
+  - The foot F/T `force.z` rings on every impact (negative spikes while the foot is down); the load-transfer
+    gate low-passes it, and never holds the swing longer than `load_wait_max`.
+  - Tried and not (yet) helpful: stance ankle CoM loop (fights the roll feedback on the stance hip roll),
+    a slow gait (0.5 s single support lets the unstable stance leg diverge). Current defaults: 0.3 s single +
+    0.2 s double support, feet 0.15 m apart. Walking-trace logging: `ros2 param set /balance_controller
+    log_file <prefix>` writes `<prefix>.walk.csv` every control step.
+- Next ideas: raise the leg PD gains in the generator and re-run the push test; estimate the lateral CoM
+  against the *stance foot* with the IMU + joint angles and regulate it at the ankle (single loop, no
+  separate roll PI); capture swing-foot touchdown timing; consider a Phase-3 simulation with contact
+  parameters (friction, foot geometry) reviewed.
 
 ## 12. Known risks
 - ZMP walking is sensitive to mass/inertia accuracy — Phase 1 mass properties matter.

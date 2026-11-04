@@ -91,8 +91,14 @@ def main():
     z0 = n.pose[3]
     for name, cmd in SEGMENTS:
         p0 = n.pose
-        n.mode("walk")
-        n.run_for(1.8, until=lambda: n.status == "WALKING")  # let the mode switch + initial hold pass
+        t_req = n.now()
+        while rclpy.ok() and n.status not in ("WALKING", "FALLEN") and n.now() - t_req < 15.0:
+            n.mode("walk")  # resend: the first message can be sent before the controller has subscribed
+            n.run_for(0.5, until=lambda: n.status == "WALKING")
+        if n.status != "WALKING":
+            print(f"{name}: controller never entered WALKING (status {n.status})")
+            ok = False
+            break
         n.run_for(2.5)  # blend-in and weight shift (no command yet)
         p_start = n.pose
         n.run_for(WALK_TIME, cmd)
