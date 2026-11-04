@@ -7,7 +7,7 @@ Sequence (all on flat ground, balance controller running): wait for BALANCING ->
   3. turn     wz=+0.30 rad/s, then stop
 After every segment the robot must be standing again (status BALANCING after the stop returns to the
 ready pose), never FALLEN, with the pelvis moved/turned in the commanded direction by a sensible amount.
-The pelvis pose comes from gz-transport (/world/flat/dynamic_pose/info, link base_link).
+The pelvis pose comes from gz-transport (/world/flat/pose/info, model midibot).
 
 Usage: walk_test.py [walk_time_s]   (default 8)
 """
@@ -34,18 +34,23 @@ class Monitor(Node):
             rclpy.parameter.Parameter("use_sim_time", rclpy.Parameter.Type.BOOL, True)])
         self.status = ""
         self.pose = None  # (x, y, yaw, z)
+        self.pose_names = []
         self.create_subscription(String, "/loco/status", lambda m: setattr(self, "status", m.data), 10)
         self.pub_mode = self.create_publisher(String, "/loco/mode", 10)
         self.pub_cmd = self.create_publisher(Twist, "/loco/cmd_vel", 10)
         self.gz = GzNode()
-        self.gz.subscribe(Pose_V, f"/world/{WORLD}/dynamic_pose/info", self.on_pose)
+        self.gz.subscribe(Pose_V, f"/world/{WORLD}/pose/info", self.on_pose)
 
     def on_pose(self, msg):
-        for p in msg.pose:
-            if p.name == "base_link":
-                o = p.orientation
-                yaw = math.atan2(2 * (o.w * o.z + o.x * o.y), 1 - 2 * (o.y * o.y + o.z * o.z))
-                self.pose = (p.position.x, p.position.y, yaw, p.position.z)
+        # prefer the model pose; skip all-zero poses (not the robot)
+        for want in ("midibot", "midibot::base_link", "base_link"):
+            for p in msg.pose:
+                if p.name == want and (p.position.z != 0.0 or p.position.x != 0.0):
+                    o = p.orientation
+                    yaw = math.atan2(2 * (o.w * o.z + o.x * o.y), 1 - 2 * (o.y * o.y + o.z * o.z))
+                    self.pose = (p.position.x, p.position.y, yaw, p.position.z)
+                    return
+        self.pose_names = sorted({p.name for p in msg.pose})[:12]
 
     def now(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -75,8 +80,12 @@ def main():
     rclpy.init()
     n = Monitor()
     print("waiting for BALANCING and the pelvis pose ...", flush=True)
+    t_wait = time.time()
     while rclpy.ok() and (n.status != "BALANCING" or n.pose is None):
         rclpy.spin_once(n, timeout_sec=0.5)
+        if n.pose is None and time.time() - t_wait > 15:
+            print(f"no robot pose yet; pose names seen on the topic: {n.pose_names}", flush=True)
+            t_wait = time.time()
     n.run_for(3.0)
     ok = True
     z0 = n.pose[3]

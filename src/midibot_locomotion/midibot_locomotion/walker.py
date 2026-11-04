@@ -49,9 +49,9 @@ class WalkPattern:
         self.gen.reset()
         self.q = self.q_ready.copy() if q_current is None else q_current.copy()
 
-    def step(self, cmd):
+    def step(self, cmd, load_ok=True):
         """One pattern sample. Returns (joint dict for BODY_JOINTS, generator state)."""
-        st = self.gen.tick(cmd)
+        st = self.gen.tick(cmd, load_ok)
         com_xy = st["com"]
         yaw = st["yaw"]
         R2 = yaw_matrix(yaw)

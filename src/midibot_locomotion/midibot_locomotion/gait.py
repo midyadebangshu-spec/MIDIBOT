@@ -22,8 +22,8 @@ class GaitParams:
     zc: float = 0.60            # CoM height above the ground (m)
     dt: float = 0.01            # pattern generator sample time (s)
     t_ss: float = 0.40          # single support time (s)
-    t_ds: float = 0.10          # double support time between steps (s)
-    t_ds_first: float = 0.50    # longer weight shift before the first step after standing (s)
+    t_ds: float = 0.20          # double support time between steps (s)
+    t_ds_first: float = 0.60    # longer weight shift before the first step after standing (s)
     t_hold: float = 1.0         # initial standing time before the first step (s)
     step_height: float = 0.04   # swing foot apex (m)
     foot_width: float = 0.18    # nominal distance between the soles' centres (m)
@@ -90,6 +90,7 @@ class WalkGenerator:
         self.cmd = (0.0, 0.0, 0.0)
         self.com = np.array([self.x_axis.x[0], self.y_axis.x[0]])
         self.done_walking = True
+        self._waiting = False
         self._extend_plan()
 
     def _mid(self):
@@ -203,10 +204,28 @@ class WalkGenerator:
         return st.stance_to
 
     # --------------------------------------------------------------- stepping
-    def tick(self, cmd=(0.0, 0.0, 0.0)):
-        """Advance one sample with the current velocity command (vx, vy, wz)."""
+    @property
+    def stance_foot(self):
+        """Foot that carries the weight during the current step's single support ('' for a hold)."""
+        st = self.steps[self.k]
+        return "" if st.kind != "walk" else ("left" if st.swing == "right" else "right")
+
+    @property
+    def waiting_for_load(self):
+        """True when the double-support shift is complete and only the load-transfer gate holds the swing."""
+        return self._waiting
+
+    def tick(self, cmd=(0.0, 0.0, 0.0), load_ok=True):
+        """Advance one sample with the current velocity command (vx, vy, wz).
+
+        `load_ok=False` freezes the pattern clock at the end of a double-support shift (the preview
+        controller keeps running with the ZMP on the stance foot) until the stance foot really carries
+        the weight, so the swing foot never lifts while the body is still over it."""
         p = self.p
         self.cmd = tuple(cmd)
+        cur = self.steps[self.k]
+        crossing = self.t < cur.t_ds_end - 1e-6 and self.t + p.dt >= cur.t_ds_end - 1e-6
+        self._waiting = (not load_ok) and cur.kind == "walk" and crossing
         n = self.gains.n_preview
         ts = self.t + np.arange(n + 1) * p.dt
         refs = np.array([self.zmp_ref(t) for t in ts])
@@ -214,7 +233,8 @@ class WalkGenerator:
         self.x_axis.step(refs[:, 0])
         self.y_axis.step(refs[:, 1])
         self.com = np.array([self.x_axis.x[0], self.y_axis.x[0]])
-        self.t += p.dt
+        if not self._waiting:
+            self.t += p.dt
         if self.t >= self.steps[self.k].t1 - 1e-9:
             self.feet = self.feet_after_current()
             self.k += 1

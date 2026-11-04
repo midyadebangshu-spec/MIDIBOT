@@ -62,6 +62,7 @@ class BalanceController(Node):
         p("fall_tilt_deg", 35.0)
         p("walk_blend_time", 1.0)   # s: blend from the standing setpoints to the walking pattern
         p("walk_tilt_kp", 0.3)      # rad of stance hip pitch per rad of pelvis pitch while walking
+        p("load_transfer", 0.80)    # fraction of the weight the stance foot must carry before the swing starts
         p("cmd_timeout", 0.5)       # s without /loco/cmd_vel -> command zero
         p("log_file", "")         # optional CSV trace of every control step (debugging/tuning)
 
@@ -204,14 +205,28 @@ class BalanceController(Node):
             return (0.0, 0.0, 0.0)
         return self.cmd
 
+    def stance_loaded(self):
+        """Load-transfer gate: the foot that will carry the swing phase holds >= `load_transfer` of the weight."""
+        gen = self.walker.gen
+        st = gen.steps[gen.k]
+        stance = gen.stance_foot
+        if not stance or st.kind != "walk":
+            return True
+        fz = {s: (self.ft[s].force.z if s in self.ft else 0.0) for s in ("left", "right")}
+        total = max(fz["left"], 0.0) + max(fz["right"], 0.0)
+        if total < 0.3 * 9.81 * pin.computeTotalMass(self.model):
+            return False  # no meaningful ground contact reading
+        return max(fz[stance], 0.0) / total >= self.get_parameter("load_transfer").value
+
     def walking_step(self, dt):
         gp = lambda n: self.get_parameter(n).value  # noqa: E731
         cmd = self.current_cmd()
         if self.ik_fail > 10:  # IK keeps failing: stop walking instead of freezing mid-step
             cmd = (0.0, 0.0, 0.0)
+        load_ok = self.stance_loaded()
         joints, st = None, None
         for _ in range(min(max(int(round(dt / self.walker.params.dt)), 1), 5)):
-            joints, st = self.walker.step(cmd)
+            joints, st = self.walker.step(cmd, load_ok)
             self.ik_fail = 0 if self.walker.converged else self.ik_fail + 1
         a = smoothstep((self.now() - self.walk_t0) / gp("walk_blend_time"))
         q = {j: (1 - a) * self.walk_q0[j] + a * joints[j] for j in BODY_JOINTS}
@@ -228,7 +243,8 @@ class BalanceController(Node):
             self.get_logger().info(
                 f"[WALKING/{st['phase']}] cmd {cmd[0]:+.2f},{cmd[1]:+.2f},{cmd[2]:+.2f}  "
                 f"pattern com {st['com'][0]:+.3f},{st['com'][1]:+.3f}  yaw {math.degrees(st['yaw']):+.1f} deg  "
-                f"tilt r/p {math.degrees(self.rpy[0]):+.1f}/{math.degrees(self.rpy[1]):+.1f}  ik_fail {self.ik_fail}")
+                f"tilt r/p {math.degrees(self.rpy[0]):+.1f}/{math.degrees(self.rpy[1]):+.1f}  ik_fail {self.ik_fail}  "
+                f"{'WAIT-LOAD' if self.walker.gen.waiting_for_load else ''}")
         self.publish(q)
         self.pub_status.publish(String(data="WALKING"))
         if self.stop_requested and self.walker.gen.settled:
