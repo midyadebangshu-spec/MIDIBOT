@@ -141,7 +141,7 @@ MIDIBOT/
 |---|---|---|
 | 1. Model ✅ | CAD, meshes, URDF/Xacro with correct mass/inertia | Robot loads in Gazebo, holds pose with joints locked, foot load = model weight |
 | 2. Control ✅ | ros2_control for all 41 actuators, standing balance | Stands unassisted, recovers from small pushes |
-| 3. Walking | ZMP walking driven by `/loco/cmd_vel` | Walks forward/backward, turns, stops on flat ground |
+| 3. Walking 🚧 | ZMP walking driven by `/loco/cmd_vel` | Walks forward/backward, turns, stops on flat ground |
 | 4. AI Unit | Sensors, SLAM, navigation, MoveIt reach + 5-finger grasp | Navigates to a goal; picks up an object from a table |
 | 5. Integration | Command → LLM planner → behavior tree → actions | "Bring me the cup" works end-to-end in sim |
 
@@ -168,7 +168,25 @@ MIDIBOT/
   measured joint angles. Under load the joints sag, and that offset is what produces the holding torque.
   Restarting the setpoint at the measured angle removes the torque and tips the robot.
 
-## 11. Known risks
+## 11. Phase 3 status (walking) — implemented, simulation acceptance pending
+Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_control/balance_controller`.
+- `gait.py`: footstep planner (velocity command -> alternating steps, per-step limits, closing step on
+  stop) + LIPM ZMP preview controller (`preview.py`, Kajita 2003, 1 s preview, 100 Hz). Step 0.5 s
+  (0.4 s single + 0.1 s double support), apex 4 cm, max 0.12 m / 0.05 m / 0.20 rad per step.
+- `ik.py` / `walker.py`: damped-least-squares leg IK on the Pinocchio model; the pelvis xy is chosen so the
+  *whole-body* CoM (not just the pelvis) follows the LIPM CoM. Upper body stays in READY.
+- Controller: `/loco/mode` `walk` -> WALKING (1 s blend from the current setpoints, then the pattern);
+  `stand` -> feet together, then a normal transition back to BALANCING. `/loco/cmd_vel` (Twist) times out to
+  zero after 0.5 s. Feedback while walking is only pelvis-pitch -> stance hip pitch (`walk_tilt_kp`);
+  the ankle CoM loop is **not** active yet. Expect to tune this in simulation.
+- Offline verification (`src/midibot_locomotion/test`, needs pinocchio + the generated URDF): IK converges, leg
+  joints stay >0.02 rad from limits and <60 % of the velocity limits, the whole-body CoM follows the LIPM
+  CoM within 2 mm, and the ZMP from full-body inverse dynamics (RNEA) stays inside the support box
+  (forward, backward, turn, sidestep). This is kinematic/inverse-dynamics evidence only.
+- Acceptance: `ros2 run midibot_gazebo walk_test.py` (forward, backward, turn, stop). **Not run yet**: it needs
+  the full sim stack (ros2_control, gz_ros2_control), which the development machine lacked.
+
+## 12. Known risks
 - ZMP walking is sensitive to mass/inertia accuracy — Phase 1 mass properties matter.
 - 41 actuators + dexterous hands make Gazebo slower than real time on CPU; hands may be simplified
   (fewer collision shapes) during walking tests.
