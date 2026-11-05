@@ -9,10 +9,14 @@ Pipeline (runs on every new joint state, up to `rate` Hz wall; timing from messa
        * ankle strategy: CoM-over-support PD (+ slow integral) -> ankle pitch/roll offsets
        * hip strategy:   pelvis roll/pitch PD -> hip roll/pitch offsets
   4. Safety: tilt > fall_tilt_deg -> FALLEN (stop commanding and hold the last posture).
+  5. Walking (Phase 3): mode "walk" starts the WALKING state: midibot_locomotion.WalkPattern (footstep
+     planner -> LIPM ZMP preview -> leg IK) gives the joint setpoints, plus pelvis-pitch feedback on the
+     stance legs. Mode "stand" stops (feet together), then returns to BALANCING via a transition.
 
 Topics
   sub  /joint_states, /imu_sensor_broadcaster/imu, /loco/{left,right}_foot_ft, /robot_description
-       /loco/mode  (std_msgs/String: "stand" | "zero")
+       /loco/mode  (std_msgs/String: "stand" | "zero" | "walk")
+       /loco/cmd_vel  (geometry_msgs/Twist: vx, vy, wz; used in walk mode, zero after `cmd_timeout`)
   pub  /body_controller/reference (control_msgs/MultiDOFCommand), /loco/status (String),
        /loco/com, /loco/cop, /loco/support_center  (geometry_msgs/PointStamped, frame "pelvis_level")
 """
@@ -21,38 +25,15 @@ import math
 import numpy as np
 import pinocchio as pin
 import rclpy
-from geometry_msgs.msg import PointStamped, WrenchStamped
+from geometry_msgs.msg import PointStamped, Twist, WrenchStamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import String
 from control_msgs.msg import MultiDOFCommand, MultiDOFStateStamped
-
-ANKLE_H = 0.06   # ankle axis -> sole (m)
-FOOT_X = 0.025   # foot centre ahead of the ankle axis (m)
-
-BODY_JOINTS = [
-    "waist_yaw_joint",
-    "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint", "left_knee_joint",
-    "left_ankle_pitch_joint", "left_ankle_roll_joint",
-    "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint", "right_knee_joint",
-    "right_ankle_pitch_joint", "right_ankle_roll_joint",
-    "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint",
-    "left_wrist_yaw_joint", "left_wrist_pitch_joint", "left_wrist_roll_joint",
-    "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint",
-    "right_wrist_yaw_joint", "right_wrist_pitch_joint", "right_wrist_roll_joint",
-    "neck_yaw_joint", "head_pitch_joint",
-]
-
-# "ready" stance: knees bent for compliance, arms slightly out
-READY = {
-    # ankle/hip chosen with Pinocchio so the CoM sits over the support centre with a level pelvis
-    "left_hip_pitch_joint": -0.25, "left_knee_joint": 0.60, "left_ankle_pitch_joint": -0.35,
-    "right_hip_pitch_joint": -0.25, "right_knee_joint": 0.60, "right_ankle_pitch_joint": -0.35,
-    "left_shoulder_roll_joint": 0.12, "right_shoulder_roll_joint": -0.12,
-    "left_elbow_joint": -0.30, "right_elbow_joint": -0.30,
-}
-
+from midibot_locomotion.pose import ANKLE_H, BODY_JOINTS, FOOT_X, READY  # noqa: F401
+from midibot_locomotion.gait import GaitParams
+from midibot_locomotion.walker import WalkPattern
 
 def smoothstep(x):
     x = min(max(x, 0.0), 1.0)
@@ -80,6 +61,25 @@ class BalanceController(Node):
         p("hip_limit", 0.20)
         p("com_offset_x", 0.0)    # desired CoM ahead of the support centre (m)
         p("fall_tilt_deg", 35.0)
+        p("walk_blend_time", 1.0)   # s: blend from the standing setpoints to the walking pattern
+        p("walk_roll_kp", 1.5)      # rad of stance hip roll per rad of pelvis roll while walking
+        p("walk_roll_kd", 0.10)     # rad of stance hip roll per rad/s of roll rate
+        p("walk_roll_ki", 6.0)      # rad of stance hip roll per rad*s of pelvis roll (removes the static sag)
+        p("walk_roll_leak", 0.4)    # s: time constant of the roll integrator leak (the stance leg changes each step)
+        p("walk_roll_limit", 0.30)  # rad: limit of the total roll correction
+        p("walk_ankle_kp", [0.0, 0.0])  # rad per m of CoM-vs-stance-foot error (sagittal, lateral)
+        p("walk_ankle_kd", [0.0, 0.0])  # rad per m/s
+        p("walk_ankle_limit", 0.15)
+        p("gait_t_ss", 0.30)        # s: single support
+        p("gait_t_ds", 0.20)        # s: double support between steps
+        p("gait_t_ds_first", 0.60)
+        p("gait_foot_width", 0.15)  # m: distance between the soles' centres
+        p("gait_min_width", 0.12)
+        p("gait_step_height", 0.03)
+        p("walk_tilt_kp", 0.3)      # rad of stance hip pitch per rad of pelvis pitch while walking
+        p("load_wait_max", 0.25)    # s: the load gate never holds the swing longer than this
+        p("load_transfer", 0.80)    # fraction of the weight the stance foot must carry before the swing starts
+        p("cmd_timeout", 0.5)       # s without /loco/cmd_vel -> command zero
         p("log_file", "")         # optional CSV trace of every control step (debugging/tuning)
 
         self.model = self.data = None
@@ -91,6 +91,7 @@ class BalanceController(Node):
         self.rpy = None
         self.gyro = np.zeros(3)
         self.ft = {}
+        self.fz_f = {}
         self.mode = "stand"
         self.state = "WAIT_STATE"
         self.t_start = None
@@ -101,6 +102,14 @@ class BalanceController(Node):
         self.tilt_f = None
         self.err_d = np.zeros(2)
         self.debug_t = None
+        self.walker = None
+        self.walk_q0 = None
+        self.walk_t0 = 0.0
+        self.stop_requested = False
+        self.cmd = (0.0, 0.0, 0.0)
+        self.cmd_t = -1e9
+        self.ik_fail = 0
+        self.roll_int = 0.0
 
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(String, "/robot_description", self.on_description, latched)
@@ -112,6 +121,7 @@ class BalanceController(Node):
             self.create_subscription(WrenchStamped, f"/loco/{s}_foot_ft",
                                      lambda m, s=s: self.ft.__setitem__(s, m.wrench), 1)
         self.create_subscription(String, "/loco/mode", self.on_mode, 10)
+        self.create_subscription(Twist, "/loco/cmd_vel", self.on_cmd_vel, 10)
         # The body controller publishes its state only once it is active. That message (29 DOFs at the
         # 500 Hz controller rate) is very expensive to deserialise in Python: staying subscribed starved
         # this loop to ~6 Hz and made the robot fall. Unsubscribe after the first message.
@@ -158,11 +168,30 @@ class BalanceController(Node):
         g = np.array([msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z])
         self.gyro = 0.8 * self.gyro + 0.2 * g  # low-pass
 
+    def on_cmd_vel(self, msg):
+        self.cmd = (msg.linear.x, msg.linear.y, msg.angular.z)
+        self.cmd_t = self.sim_t
+
     def on_mode(self, msg):
-        if msg.data in ("stand", "zero") and msg.data != self.mode:
-            self.mode = msg.data
-            self.begin_transition()
-            self.get_logger().info(f"mode -> {self.mode}")
+        m = msg.data
+        if m == "walk":
+            if self.state == "WALKING":
+                self.stop_requested = False
+            elif self.state == "BALANCING":
+                self.begin_walk()
+            else:
+                self.get_logger().warn(f"walk requested in state {self.state}: ignored (wait for BALANCING)")
+        elif m in ("stand", "zero"):
+            if self.state == "WALKING":
+                if m == "stand":
+                    self.stop_requested = True
+                    self.get_logger().info("stand requested: stopping the walk")
+                else:
+                    self.get_logger().warn("zero is not allowed while walking: send stand first")
+            elif m != self.mode:
+                self.mode = m
+                self.begin_transition()
+                self.get_logger().info(f"mode -> {self.mode}")
 
     # ------------------------------------------------------------ helpers
     def target_pose(self):
@@ -175,6 +204,135 @@ class BalanceController(Node):
         self.t_start = self.now()
         self.q_start = {j: self.q_cmd.get(j, self.q_meas.get(j, 0.0)) for j in BODY_JOINTS}
         self.state = "TRANSITION"
+
+    def begin_walk(self):
+        if self.walker is None:
+            g = self.get_parameter
+            self.walker = WalkPattern(self.model, GaitParams(
+                t_ss=g("gait_t_ss").value, t_ds=g("gait_t_ds").value, t_ds_first=g("gait_t_ds_first").value,
+                foot_width=g("gait_foot_width").value, min_width=g("gait_min_width").value,
+                step_height=g("gait_step_height").value))
+        self.walker.reset()
+        # blend from the current setpoints (not the sagging measured angles) into the pattern
+        self.walk_q0 = {j: self.q_cmd.get(j, self.q_meas.get(j, 0.0)) for j in BODY_JOINTS}
+        self.walk_t0 = self.now()
+        self.stop_requested = False
+        self.ik_fail = 0
+        self.roll_int = 0.0
+        self.walk_err = None
+        self.wait_t0 = None
+        self.mode = "walk"
+        self.state = "WALKING"
+        self.get_logger().info("mode -> walk")
+
+    def current_cmd(self):
+        if self.stop_requested or self.now() - self.cmd_t > self.get_parameter("cmd_timeout").value:
+            return (0.0, 0.0, 0.0)
+        return self.cmd
+
+    def stance_loaded(self):
+        """Load-transfer gate: the foot that will carry the swing phase holds >= `load_transfer` of the weight."""
+        gen = self.walker.gen
+        st = gen.steps[gen.k]
+        stance = gen.stance_foot
+        if not stance or st.kind != "walk":
+            return True
+        for s in ("left", "right"):  # the raw force rings on every impact: low-pass it
+            raw = self.ft[s].force.z if s in self.ft else 0.0
+            self.fz_f[s] = 0.85 * self.fz_f.get(s, raw) + 0.15 * raw
+        fz = self.fz_f
+        total = max(fz["left"], 0.0) + max(fz["right"], 0.0)
+        if total < 0.3 * 9.81 * pin.computeTotalMass(self.model):
+            return False  # no meaningful ground contact reading
+        return max(fz[stance], 0.0) / total >= self.get_parameter("load_transfer").value
+
+    def walking_step(self, dt):
+        gp = lambda n: self.get_parameter(n).value  # noqa: E731
+        cmd = self.current_cmd()
+        if self.ik_fail > 10:  # IK keeps failing: stop walking instead of freezing mid-step
+            cmd = (0.0, 0.0, 0.0)
+        load_ok = self.stance_loaded()
+        if self.walker.gen.waiting_for_load:
+            if self.wait_t0 is None:
+                self.wait_t0 = self.now()
+            elif self.now() - self.wait_t0 > gp("load_wait_max"):
+                load_ok = True  # do not let the CoM slide onto the foot centre: go ahead
+        else:
+            self.wait_t0 = None
+        joints, st = None, None
+        for _ in range(min(max(int(round(dt / self.walker.params.dt)), 1), 5)):
+            joints, st = self.walker.step(cmd, load_ok)
+            self.ik_fail = 0 if self.walker.converged else self.ik_fail + 1
+        a = smoothstep((self.now() - self.walk_t0) / gp("walk_blend_time"))
+        q = {j: (1 - a) * self.walk_q0[j] + a * joints[j] for j in BODY_JOINTS}
+        # pelvis pitch feedback on the legs that carry weight (same sign convention as standing)
+        fa = gp("filter_alpha")
+        tilt_raw = np.array(self.rpy)
+        self.tilt_f = tilt_raw if self.tilt_f is None else (1 - fa) * self.tilt_f + fa * tilt_raw
+        h = float(np.clip(gp("walk_tilt_kp") * self.tilt_f[1], -gp("hip_limit"), gp("hip_limit"))) * a
+        # ankle strategy on the stance foot: measured CoM relative to the stance foot(s) vs the pattern's
+        stance = [s_ for s_ in ("left", "right") if st[s_][2] < 1e-4]
+        sole = getattr(self, "sole", {})
+        u = np.zeros(2)
+        if stance and all(s_ in sole for s_ in stance) and getattr(self, "com_est", None) is not None:
+            c, sn = math.cos(st["yaw"]), math.sin(st["yaw"])
+            to_body = lambda v: np.array([c * v[0] + sn * v[1], -sn * v[0] + c * v[1]])  # noqa: E731
+            d_com = to_body(st["com"] - st["pelvis"][:2])
+            err = np.mean([(self.com_est[:2] - sole[s_][:2]) - (d_com - to_body(np.array(st[s_][:2]) - st["pelvis"][:2]))
+                           for s_ in stance], axis=0)
+            fa2 = gp("filter_alpha")
+            prev = err if self.walk_err is None else self.walk_err
+            self.walk_err = (1 - fa2) * prev + fa2 * err
+            derr = (self.walk_err - prev) / max(dt, 1e-3)
+            ga = lambda n: np.array(gp(n), dtype=float)  # noqa: E731
+            u = np.clip(ga("walk_ankle_kp") * self.walk_err + ga("walk_ankle_kd") * derr,
+                        -gp("walk_ankle_limit"), gp("walk_ankle_limit")) * a
+            for s_ in stance:
+                q[f"{s_}_ankle_pitch_joint"] += u[0]
+                q[f"{s_}_hip_pitch_joint"] += -u[0]
+                q[f"{s_}_ankle_roll_joint"] -= u[1]
+                q[f"{s_}_hip_roll_joint"] += u[1]
+        else:
+            self.walk_err = None
+        # pelvis roll feedback: the stance ankle roll joints are soft, so the body sags towards the stance side
+        # Hip-roll feedback only makes sense in single support. With both soles planted, the same hip-roll
+        # offset on both legs cannot roll the pelvis (the legs have equal length) and just tilts the feet.
+        lim = gp("walk_roll_limit")
+        single = len(stance) == 1
+        roll_in = self.tilt_f[0] if single else 0.0
+        self.roll_int = float(np.clip(self.roll_int * (1.0 - dt / gp("walk_roll_leak"))
+                                      + gp("walk_roll_ki") * roll_in * dt, -lim, lim))
+        hr = (float(np.clip(gp("walk_roll_kp") * roll_in + gp("walk_roll_kd") * (self.gyro[0] if single else 0.0)
+                            + self.roll_int, -lim, lim)) * a) if single else 0.0
+        for s in ("left", "right"):
+            if st[s][2] < 1e-4:
+                q[f"{s}_hip_pitch_joint"] += h
+                q[f"{s}_hip_roll_joint"] += hr
+        if self.debug_t is None or self.now() - self.debug_t > 0.5:
+            self.debug_t = self.now()
+            self.get_logger().info(
+                f"[WALKING/{st['phase']}] cmd {cmd[0]:+.2f},{cmd[1]:+.2f},{cmd[2]:+.2f}  "
+                f"pattern com {st['com'][0]:+.3f},{st['com'][1]:+.3f}  yaw {math.degrees(st['yaw']):+.1f} deg  "
+                f"tilt r/p {math.degrees(self.rpy[0]):+.1f}/{math.degrees(self.rpy[1]):+.1f}  ik_fail {self.ik_fail}  "
+                f"{'WAIT-LOAD' if self.walker.gen.waiting_for_load else ''}")
+        ex, ey = (self.walk_err if self.walk_err is not None else (float('nan'), float('nan')))
+        if gp("log_file"):
+            if not hasattr(self, "_wlog"):
+                self._wlog = open(gp("log_file") + ".walk.csv", "w")
+                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy,ex,ey\n")
+            fz = {s_: (self.ft[s_].force.z if s_ in self.ft else 0.0) for s_ in ("left", "right")}
+            self._wlog.write(f"{self.now():.3f},{st['phase']},{int(self.walker.gen.waiting_for_load)},"
+                             f"{self.rpy[0]:.4f},{self.rpy[1]:.4f},{self.gyro[0]:.4f},{hr:.4f},{h:.4f},"
+                             f"{fz['left']:.1f},{fz['right']:.1f},{st['com'][0]:.4f},{st['com'][1]:.4f},"
+                             f"{st['left'][2]:.4f},{st['right'][2]:.4f},{u[0]:.4f},{u[1]:.4f},{ex:.4f},{ey:.4f}\n")
+            self._wlog.flush()
+        self.publish(q)
+        self.pub_status.publish(String(data="WALKING"))
+        if self.stop_requested and self.walker.gen.settled:
+            self.get_logger().info("walk finished: back to the ready pose")
+            self.stop_requested = False
+            self.mode = "stand"
+            self.begin_transition()
 
     def now(self):
         """Simulation time from the joint-state stamps.
@@ -206,9 +364,12 @@ class BalanceController(Node):
                                          pin.ReferenceFrame.LOCAL_WORLD_ALIGNED).linear for s in ("left", "right")) / 2
         self.com_vel = self.data.vcom[0] - v_sup
         sup, cop_num, fz_sum = np.zeros(3), np.zeros(3), 0.0
+        self.sole = {}
+        self.com_est = com
         for s in ("left", "right"):
             M = self.data.oMf[self.frames[s]]
             sup += M.act(np.array([FOOT_X, 0.0, -ANKLE_H])) / 2.0
+            self.sole[s] = M.act(np.array([FOOT_X, 0.0, -ANKLE_H]))
             w = self.ft.get(s)
             if w is not None and w.force.z > 5.0:
                 fz = w.force.z
@@ -262,6 +423,9 @@ class BalanceController(Node):
             return  # no new state since the last step
         dt = 0.01 if self.last_step_t is None else min(max(self.now() - self.last_step_t, 1e-4), 0.05)
         self.last_step_t = self.now()
+        if self.state == "WALKING":
+            self.walking_step(dt)
+            return
         ramp = 1.0
         if self.state == "TRANSITION":
             a = smoothstep((self.now() - self.t_start) / gp("transition_time"))

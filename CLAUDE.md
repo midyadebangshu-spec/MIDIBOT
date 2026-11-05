@@ -24,7 +24,8 @@ src/
 ├── midibot_cad/          # CadQuery structure, vendor CAD fetcher, URDF generator (not a ROS package)
 ├── midibot_description/  # URDF/Xacro, meshes, ros2_control + controller config (mostly GENERATED)
 ├── midibot_gazebo/       # world, sim launch, bridge, check/push/snapshot/video tools
-└── midibot_control/      # balance controller, hand coupler
+├── midibot_control/      # balance controller (stand + walk mode), hand coupler
+└── midibot_locomotion/   # walking library: footstep planner, ZMP preview, leg IK (tests in test/)
 ```
 
 ## Key conventions
@@ -49,5 +50,7 @@ src/
 source /opt/ros/jazzy/setup.bash && colcon build --symlink-install && source install/setup.bash
 ros2 launch midibot_gazebo sim.launch.py          # headless; balance controller on
 ros2 run midibot_gazebo push_test.py              # Phase 2 acceptance (balance + pushes)
+ros2 run midibot_gazebo walk_test.py              # Phase 3 acceptance (walk fwd/back/turn/stop)
+MIDIBOT_URDF=<generated.urdf> python3 -m pytest src/midibot_locomotion/test   # Phase 3 offline checks
 ros2 launch midibot_gazebo sim.launch.py balance:=false   # then: ros2 run midibot_gazebo check_model.py
 ```

@@ -141,7 +141,7 @@ MIDIBOT/
 |---|---|---|
 | 1. Model ✅ | CAD, meshes, URDF/Xacro with correct mass/inertia | Robot loads in Gazebo, holds pose with joints locked, foot load = model weight |
 | 2. Control ✅ | ros2_control for all 41 actuators, standing balance | Stands unassisted, recovers from small pushes |
-| 3. Walking | ZMP walking driven by `/loco/cmd_vel` | Walks forward/backward, turns, stops on flat ground |
+| 3. Walking ✅ | ZMP walking driven by `/loco/cmd_vel` | Walks forward/backward, turns, stops on flat ground |
 | 4. AI Unit | Sensors, SLAM, navigation, MoveIt reach + 5-finger grasp | Navigates to a goal; picks up an object from a table |
 | 5. Integration | Command → LLM planner → behavior tree → actions | "Bring me the cup" works end-to-end in sim |
 
@@ -152,6 +152,7 @@ MIDIBOT/
 - Rendering sensors (camera, lidar) run on CPU here; with them on, the sim runs at ~0.3× real time.
 
 ## 10. Phase 2 results
+_(Phase 3 changed the body drive to a velocity servo, see section 11; the text below describes the original torque-mode design.)_
 - Body joints run in **torque mode**: `pid_controller` computes PD torque (clamped to each actuator's
   peak) from a position/velocity reference streamed by the balance controller.
 - **Balance controller** (`midibot_control/balance_controller`, Pinocchio): CoM, support centre and CoP
@@ -168,7 +169,41 @@ MIDIBOT/
   measured joint angles. Under load the joints sag, and that offset is what produces the holding torque.
   Restarting the setpoint at the measured angle removes the torque and tips the robot.
 
-## 11. Known risks
+## 11. Phase 3 results (walking)
+Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_control/balance_controller`.
+- `gait.py`: footstep planner (velocity command -> alternating steps, per-step limits, closing step on
+  stop) + LIPM ZMP preview controller (`preview.py`, Kajita 2003, 1 s preview, 100 Hz). Defaults: 0.3 s single
+  + 0.2 s double support, feet 0.15 m apart, 3 cm swing apex, max 0.12 m / 0.05 m / 0.20 rad per step.
+- `ik.py` / `walker.py`: damped-least-squares leg IK on the Pinocchio model; the pelvis xy is chosen so the
+  *whole-body* CoM follows the LIPM CoM. Upper body stays in READY.
+- Controller: `/loco/mode` `walk` -> WALKING (1 s blend from the current setpoints, then the pattern);
+  `stand` -> feet together, then a normal transition back to BALANCING. `/loco/cmd_vel` (Twist) times out to
+  zero after 0.5 s. A load-transfer gate (foot F/T) is available but never holds a swing longer than
+  `load_wait_max`; with the rigid joints the foot loads flicker between feet, so it mostly times out. Hip-roll
+  feedback applies in single support only; the stance ankle CoM loop is present but off (gains 0).
+- **Body joint drive (the fix that made walking work).** The body joints used a torque-mode PD at 500 Hz
+  (`BODY_DRIVE = "effort"`). In one-leg stance the ankle-roll and hip-roll springs are in series and were
+  softer than gravity (m g h_com), so the robot fell sideways at the first swing; stiffer torque gains rattled
+  an unloaded foot and made plain standing unstable. The generator now drives the body as a **velocity
+  servo** (`BODY_DRIVE = "velocity"`: `pid_controller` P = 40 1/s on the joint error -> joint velocity
+  command; Gazebo enforces it every physics step within the URDF effort/velocity limits), like the inner
+  loop of a real QDD actuator. Standing balance and the push test still pass (peak tilt 1.4-2.2 deg instead of
+  3-7 deg). The torque-mode option is kept in the generator for comparison.
+- Offline verification (`src/midibot_locomotion/test`, needs pinocchio + the generated URDF): IK converges, leg
+  joints stay >0.02 rad from limits and <60 % of the velocity limits, the whole-body CoM follows the LIPM CoM
+  within 2 mm, and the ZMP from full-body inverse dynamics stays inside the support box.
+- **Acceptance (`ros2 run midibot_gazebo walk_test.py`, headless, flat ground): 5 of 5 runs PASS.** Per run:
+  forward +0.50..+0.60 m, backward -0.40..-0.44 m, turn +74..+111 deg (commanded 137 deg), no fall, back to
+  BALANCING after every stop, pelvis height unchanged. One further run with a rendering video camera (sim
+  at ~0.3x real time) walked forward/backward but fell during the turn: walking is not yet robust to a
+  slow simulator, which matters once Phase 4 turns the cameras on.
+- Not done / known limits: no state-estimator feedback on the pattern (open loop in position, the rigid joints
+  carry it); the turn is slower than commanded; stepping over obstacles, uneven ground and push recovery by
+  stepping are out of scope for this phase.
+- Tools: gait timing and walking gains are ROS parameters (`gait_*`, `walk_*`); `ros2 param set
+  /balance_controller log_file <prefix>` writes a per-step trace `<prefix>.walk.csv`.
+
+## 12. Known risks
 - ZMP walking is sensitive to mass/inertia accuracy — Phase 1 mass properties matter.
 - 41 actuators + dexterous hands make Gazebo slower than real time on CPU; hands may be simplified
   (fewer collision shapes) during walking tests.
