@@ -295,11 +295,15 @@ class BalanceController(Node):
         else:
             self.walk_err = None
         # pelvis roll feedback: the stance ankle roll joints are soft, so the body sags towards the stance side
+        # Hip-roll feedback only makes sense in single support. With both soles planted, the same hip-roll
+        # offset on both legs cannot roll the pelvis (the legs have equal length) and just tilts the feet.
         lim = gp("walk_roll_limit")
+        single = len(stance) == 1
+        roll_in = self.tilt_f[0] if single else 0.0
         self.roll_int = float(np.clip(self.roll_int * (1.0 - dt / gp("walk_roll_leak"))
-                                      + gp("walk_roll_ki") * self.tilt_f[0] * dt, -lim, lim))
-        hr = float(np.clip(gp("walk_roll_kp") * self.tilt_f[0] + gp("walk_roll_kd") * self.gyro[0]
-                           + self.roll_int, -lim, lim)) * a
+                                      + gp("walk_roll_ki") * roll_in * dt, -lim, lim))
+        hr = (float(np.clip(gp("walk_roll_kp") * roll_in + gp("walk_roll_kd") * (self.gyro[0] if single else 0.0)
+                            + self.roll_int, -lim, lim)) * a) if single else 0.0
         for s in ("left", "right"):
             if st[s][2] < 1e-4:
                 q[f"{s}_hip_pitch_joint"] += h
@@ -311,15 +315,16 @@ class BalanceController(Node):
                 f"pattern com {st['com'][0]:+.3f},{st['com'][1]:+.3f}  yaw {math.degrees(st['yaw']):+.1f} deg  "
                 f"tilt r/p {math.degrees(self.rpy[0]):+.1f}/{math.degrees(self.rpy[1]):+.1f}  ik_fail {self.ik_fail}  "
                 f"{'WAIT-LOAD' if self.walker.gen.waiting_for_load else ''}")
+        ex, ey = (self.walk_err if self.walk_err is not None else (float('nan'), float('nan')))
         if gp("log_file"):
             if not hasattr(self, "_wlog"):
                 self._wlog = open(gp("log_file") + ".walk.csv", "w")
-                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy\n")
+                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy,ex,ey\n")
             fz = {s_: (self.ft[s_].force.z if s_ in self.ft else 0.0) for s_ in ("left", "right")}
             self._wlog.write(f"{self.now():.3f},{st['phase']},{int(self.walker.gen.waiting_for_load)},"
                              f"{self.rpy[0]:.4f},{self.rpy[1]:.4f},{self.gyro[0]:.4f},{hr:.4f},{h:.4f},"
                              f"{fz['left']:.1f},{fz['right']:.1f},{st['com'][0]:.4f},{st['com'][1]:.4f},"
-                             f"{st['left'][2]:.4f},{st['right'][2]:.4f},{u[0]:.4f},{u[1]:.4f}\n")
+                             f"{st['left'][2]:.4f},{st['right'][2]:.4f},{u[0]:.4f},{u[1]:.4f},{ex:.4f},{ey:.4f}\n")
             self._wlog.flush()
         self.publish(q)
         self.pub_status.publish(String(data="WALKING"))

@@ -185,23 +185,28 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
   (forward, backward, turn, sidestep). This is kinematic/inverse-dynamics evidence only.
 - Acceptance: `ros2 run midibot_gazebo walk_test.py` (forward, backward, turn, stop). **Currently FAILS**
   (first runs on 2026-11-04); `push_test.py` (Phase 2) still passes.
-- Simulation findings so far:
-  - Standing under the walk pattern is steady (tilt < 0.5 deg). Walking starts and takes 3-5 steps
-    (0.25-0.42 m), then rolls towards the outside of the stance foot and falls.
-  - The leg joint PD gains (hip roll 400, ankle roll 200 Nm/rad ...) are too soft for single support: the
-    stance leg sags ~4-7 deg under the lateral load. Scaling the leg gains by 2.5 at runtime (stable standing;
-    4x was not) was the biggest single improvement (second-step fall -> 3-5 steps). Not baked into
-    `generate_urdf.py` `pd_gains` yet (the generator needs CadQuery, not available on the dev box).
-  - The foot F/T `force.z` rings on every impact (negative spikes while the foot is down); the load-transfer
-    gate low-passes it, and never holds the swing longer than `load_wait_max`.
-  - Tried and not (yet) helpful: stance ankle CoM loop (fights the roll feedback on the stance hip roll),
-    a slow gait (0.5 s single support lets the unstable stance leg diverge). Current defaults: 0.3 s single +
-    0.2 s double support, feet 0.15 m apart. Walking-trace logging: `ros2 param set /balance_controller
-    log_file <prefix>` writes `<prefix>.walk.csv` every control step.
-- Next ideas: raise the leg PD gains in the generator and re-run the push test; estimate the lateral CoM
-  against the *stance foot* with the IMU + joint angles and regulate it at the ankle (single loop, no
-  separate roll PI); capture swing-foot touchdown timing; consider a Phase-3 simulation with contact
-  parameters (friction, foot geometry) reviewed.
+- Simulation findings (2026-11-04/05; this section corrects an earlier, wrong "3-5 steps" claim that read the
+  controller's planned phase labels, not the real feet). **The robot has not yet taken a real step**: it
+  stands steadily in walk mode (tilt < 0.5 deg), and falls sideways over the stance foot as soon as the
+  weight is on one leg (video: stands ~15 s, falls within ~1 s of lifting a foot).
+  - Root cause: lateral stiffness in single support. The stance ankle-roll and hip-roll joints are two springs
+    in series; at the generated gains (200 / 400 Nm/rad) they give < 150 Nm/rad against ~250 Nm/rad of
+    gravity (m g h_com), i.e. one-leg stance is statically unstable. At 2.5x gains the margin is ~0 and the
+    CoM still diverges outward (growth time ~0.4 s) once the swing foot unloads.
+  - Stiffer joints are not a free fix: torque-mode PD at 500 Hz rattles an unloaded foot at 2.5x gains with
+    scaled D (foot force swings -150..+900 N), and standing itself falls at 4x / 3x. A rigid joint model
+    needs a higher-bandwidth inner loop (position/velocity interface or a faster controller) rather than
+    larger gains.
+  - Hip-roll feedback is only valid in single support (with both soles planted, equal hip-roll offsets on both
+    legs just tilt the feet); it now applies there only. A stance ankle CoM loop exists but is off (gains 0).
+  - Foot F/T `force.z` rings on every impact; the load-transfer gate low-passes it and never holds the swing
+    longer than `load_wait_max`.
+  - Tools: gait timing and gains are ROS parameters (`gait_*`, `walk_*`); `ros2 param set /balance_controller
+    log_file <prefix>` writes a per-step trace `<prefix>.walk.csv` (roll, pitch, loads, measured-vs-pattern CoM
+    error). Leg PD gains can be changed live with `ros2 param set /body_controller gains.<joint>.p <value>`.
+- Next options: (a) a stiffer, faster joint model (position/velocity command interface or a higher
+  controller rate) and then re-tune; (b) lower the CoM further (deeper crouch) and widen the stance to cut the
+  gravity stiffness; (c) a model-based lateral controller (stance-foot CoM + ankle torque) once (a) exists.
 
 ## 12. Known risks
 - ZMP walking is sensitive to mass/inertia accuracy — Phase 1 mass properties matter.
