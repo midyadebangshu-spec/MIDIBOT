@@ -178,9 +178,10 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
   *whole-body* CoM follows the LIPM CoM. Upper body stays in READY.
 - Controller: `/loco/mode` `walk` -> WALKING (1 s blend from the current setpoints, then the pattern);
   `stand` -> feet together, then a normal transition back to BALANCING. `/loco/cmd_vel` (Twist) times out to
-  zero after 0.5 s. A load-transfer gate (foot F/T) is available but never holds a swing longer than
+  zero after 0.5 s. Heading hold on straight walks (see the state estimator below). A load-transfer gate (foot F/T) is available but never holds a swing longer than
   `load_wait_max`; with the rigid joints the foot loads flicker between feet, so it mostly times out. Hip-roll
-  feedback applies in single support only; the stance ankle CoM loop is present but off (gains 0).
+  feedback (single support only) and the stance ankle CoM loop are present but OFF (gains 0): with the rigid
+  servo joints the roll feedback appeared to hurt (3 of 4 runs passed with it on, 4 of 4 with it off).
 - **Body joint drive (the fix that made walking work).** The body joints used a torque-mode PD at 500 Hz
   (`BODY_DRIVE = "effort"`). In one-leg stance the ankle-roll and hip-roll springs are in series and were
   softer than gravity (m g h_com), so the robot fell sideways at the first swing; stiffer torque gains rattled
@@ -192,13 +193,23 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
 - Offline verification (`src/midibot_locomotion/test`, needs pinocchio + the generated URDF): IK converges, leg
   joints stay >0.02 rad from limits and <60 % of the velocity limits, the whole-body CoM follows the LIPM CoM
   within 2 mm, and the ZMP from full-body inverse dynamics stays inside the support box.
-- **Acceptance (`ros2 run midibot_gazebo walk_test.py`, headless, flat ground): 5 of 5 runs PASS.** Per run:
-  forward +0.50..+0.60 m, backward -0.40..-0.44 m, turn +74..+111 deg (commanded 137 deg), no fall, back to
-  BALANCING after every stop, pelvis height unchanged. One further run with a rendering video camera (sim
-  at ~0.3x real time) walked forward/backward but fell during the turn: walking is not yet robust to a
-  slow simulator, which matters once Phase 4 turns the cameras on.
-- Not done / known limits: no state-estimator feedback on the pattern (open loop in position, the rigid joints
-  carry it); the turn is slower than commanded; stepping over obstacles, uneven ground and push recovery by
+- **Acceptance (`ros2 run midibot_gazebo walk_test.py`, headless, flat ground): PASS.** Runs with the final
+  defaults: 4 of 4 (forward +0.50..+0.59 m, backward -0.40..-0.48 m, turn +90..+105 deg of 137 commanded, back
+  to BALANCING after every stop, straight-walk yaw drift <= 1.6 deg). Earlier configurations: 5 of 5, then
+  turn falls in ~1 of 4 with the roll feedback on. With a rendering camera (sim ~0.3x real time) it passed 1 and
+  fell 1 of 2: walking is not yet shown to be robust to a slow simulator (matters once Phase 4 enables cameras).
+- State estimator (`midibot_locomotion/estimator.py`, published as `/loco/odom`): a Kalman filter in the style of
+  Bloesch et al. with state = pelvis position/velocity, both sole positions and the accelerometer bias; it
+  predicts with the IMU (orientation + accelerometer) and corrects with leg kinematics and a flat-ground
+  constraint on the planned stance feet. Offline (synthetic, noisy + biased accelerometer): <= 1 cm pelvis error
+  over a walk where accelerometer dead reckoning drifts metres; bias recovered. In simulation `walk_test.py`
+  compares it with the ground-truth pose per segment (limit max(5 cm, 15 % of distance) and 5 deg yaw): in the
+  last 8 runs the position error was 0.2-2.7 cm and the yaw error ~0 deg. The IMU provides yaw in simulation; a
+  real IMU without a magnetometer will drift in yaw, so a real deployment needs a yaw reference.
+- Heading hold: while a yaw rate is commanded the target follows the real heading; on straight walks the
+  target freezes and the yaw-rate command is corrected (`heading_kp` 0.5 1/s, limit 0.1 rad/s).
+- Not done / known limits: the estimate is not yet used to correct the footsteps (next: capture-point /
+  DCM stepping); the turn is slower than commanded; stepping over obstacles, uneven ground and push recovery by
   stepping are out of scope for this phase.
 - Tools: gait timing and walking gains are ROS parameters (`gait_*`, `walk_*`); `ros2 param set
   /balance_controller log_file <prefix>` writes a per-step trace `<prefix>.walk.csv`.

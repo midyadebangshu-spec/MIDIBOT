@@ -25,7 +25,7 @@ src/
 ├── midibot_description/  # URDF/Xacro, meshes, ros2_control + controller config (mostly GENERATED)
 ├── midibot_gazebo/       # world, sim launch, bridge, check/push/snapshot/video tools
 ├── midibot_control/      # balance controller (stand + walk mode), hand coupler
-└── midibot_locomotion/   # walking library: footstep planner, ZMP preview, leg IK (tests in test/)
+└── midibot_locomotion/   # walking library: footstep planner, ZMP preview, leg IK, base state estimator (tests in test/)
 ```
 
 ## Key conventions

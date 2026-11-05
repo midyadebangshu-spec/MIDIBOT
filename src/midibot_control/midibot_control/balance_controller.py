@@ -26,12 +26,14 @@ import numpy as np
 import pinocchio as pin
 import rclpy
 from geometry_msgs.msg import PointStamped, Twist, WrenchStamped
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import String
 from control_msgs.msg import MultiDOFCommand, MultiDOFStateStamped
 from midibot_locomotion.pose import ANKLE_H, BODY_JOINTS, FOOT_X, READY  # noqa: F401
+from midibot_locomotion.estimator import BaseEstimator
 from midibot_locomotion.gait import GaitParams
 from midibot_locomotion.walker import WalkPattern
 
@@ -62,9 +64,9 @@ class BalanceController(Node):
         p("com_offset_x", 0.0)    # desired CoM ahead of the support centre (m)
         p("fall_tilt_deg", 35.0)
         p("walk_blend_time", 1.0)   # s: blend from the standing setpoints to the walking pattern
-        p("walk_roll_kp", 1.5)      # rad of stance hip roll per rad of pelvis roll while walking
-        p("walk_roll_kd", 0.10)     # rad of stance hip roll per rad/s of roll rate
-        p("walk_roll_ki", 6.0)      # rad of stance hip roll per rad*s of pelvis roll (removes the static sag)
+        p("walk_roll_kp", 0.0)      # rad of stance hip roll per rad of pelvis roll while walking
+        p("walk_roll_kd", 0.0)      # rad of stance hip roll per rad/s of roll rate
+        p("walk_roll_ki", 0.0)      # rad of stance hip roll per rad*s of pelvis roll (removes the static sag)
         p("walk_roll_leak", 0.4)    # s: time constant of the roll integrator leak (the stance leg changes each step)
         p("walk_roll_limit", 0.30)  # rad: limit of the total roll correction
         p("walk_ankle_kp", [0.0, 0.0])  # rad per m of CoM-vs-stance-foot error (sagittal, lateral)
@@ -76,6 +78,8 @@ class BalanceController(Node):
         p("gait_foot_width", 0.15)  # m: distance between the soles' centres
         p("gait_min_width", 0.12)
         p("gait_step_height", 0.03)
+        p("heading_kp", 0.5)        # 1/s: yaw-rate correction per rad of heading error while walking
+        p("heading_limit", 0.10)    # rad/s: limit of the heading correction
         p("walk_tilt_kp", 0.3)      # rad of stance hip pitch per rad of pelvis pitch while walking
         p("load_wait_max", 0.25)    # s: the load gate never holds the swing longer than this
         p("load_transfer", 0.80)    # fraction of the weight the stance foot must carry before the swing starts
@@ -103,6 +107,14 @@ class BalanceController(Node):
         self.err_d = np.zeros(2)
         self.debug_t = None
         self.walker = None
+        self.est = BaseEstimator()
+        self.contact = {"left": True, "right": True}
+        self.R_imu = None
+        self.acc = np.zeros(3)
+        self.est_last_t = None
+        self.sole_body = {}
+        self.heading_target = 0.0
+        self.pattern_yaw = 0.0
         self.walk_q0 = None
         self.walk_t0 = 0.0
         self.stop_requested = False
@@ -131,6 +143,7 @@ class BalanceController(Node):
 
         self.pub_ref = self.create_publisher(MultiDOFCommand, "/body_controller/reference", 10)
         self.pub_status = self.create_publisher(String, "/loco/status", 10)
+        self.pub_odom = self.create_publisher(Odometry, "/loco/odom", 10)
         self.pub_com = self.create_publisher(PointStamped, "/loco/com", 10)
         self.pub_cop = self.create_publisher(PointStamped, "/loco/cop", 10)
         self.pub_sup = self.create_publisher(PointStamped, "/loco/support_center", 10)
@@ -163,6 +176,9 @@ class BalanceController(Node):
 
     def on_imu(self, msg):
         o = msg.orientation
+        self.R_imu = pin.Quaternion(o.w, o.x, o.y, o.z).normalized().toRotationMatrix()
+        a = msg.linear_acceleration
+        self.acc = np.array([a.x, a.y, a.z])
         r, pch, _ = euler_from_quat(o.x, o.y, o.z, o.w)
         self.rpy = (r, pch)
         g = np.array([msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z])
@@ -205,6 +221,37 @@ class BalanceController(Node):
         self.q_start = {j: self.q_cmd.get(j, self.q_meas.get(j, 0.0)) for j in BODY_JOINTS}
         self.state = "TRANSITION"
 
+    def update_estimator(self):
+        """Legged-odometry filter (IMU + leg kinematics + stance feet); publishes /loco/odom."""
+        if self.R_imu is None or len(self.sole_body) < 2:
+            return
+        t = self.now()
+        if self.est_last_t is not None and t <= self.est_last_t:
+            return
+        contact = self.contact if self.state == "WALKING" else {"left": True, "right": True}
+        if not self.est.initialised:
+            z0 = -float(np.mean([(self.R_imu @ self.sole_body[s_])[2] for s_ in ("left", "right")]))
+            self.est.initialise(self.R_imu, self.sole_body, p0=(0.0, 0.0, z0))
+            self.est_last_t = t
+            return
+        dt = min(max(t - self.est_last_t, 1e-3), 0.05)
+        self.est_last_t = t
+        p_, v_ = self.est.step(dt, self.R_imu, self.acc, self.sole_body, contact)
+        m = Odometry()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id, m.child_frame_id = "odom", "pelvis"
+        m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z = (float(c) for c in p_)
+        q = pin.Quaternion(self.R_imu)
+        m.pose.pose.orientation.x, m.pose.pose.orientation.y = float(q.x), float(q.y)
+        m.pose.pose.orientation.z, m.pose.pose.orientation.w = float(q.z), float(q.w)
+        vb = self.R_imu.T @ v_
+        m.twist.twist.linear.x, m.twist.twist.linear.y, m.twist.twist.linear.z = (float(c) for c in vb)
+        m.twist.twist.angular.x, m.twist.twist.angular.y, m.twist.twist.angular.z = (float(c) for c in self.gyro)
+        self.pub_odom.publish(m)
+
+    def imu_yaw(self):
+        return math.atan2(self.R_imu[1, 0], self.R_imu[0, 0]) if self.R_imu is not None else 0.0
+
     def begin_walk(self):
         if self.walker is None:
             g = self.get_parameter
@@ -213,6 +260,8 @@ class BalanceController(Node):
                 foot_width=g("gait_foot_width").value, min_width=g("gait_min_width").value,
                 step_height=g("gait_step_height").value))
         self.walker.reset()
+        self.heading_target = self.imu_yaw()  # heading hold target starts at the heading at walk start
+        self.pattern_yaw = 0.0
         # blend from the current setpoints (not the sagging measured angles) into the pattern
         self.walk_q0 = {j: self.q_cmd.get(j, self.q_meas.get(j, 0.0)) for j in BODY_JOINTS}
         self.walk_t0 = self.now()
@@ -251,6 +300,17 @@ class BalanceController(Node):
         cmd = self.current_cmd()
         if self.ik_fail > 10:  # IK keeps failing: stop walking instead of freezing mid-step
             cmd = (0.0, 0.0, 0.0)
+        # Heading hold on straight walks only. While a yaw rate is commanded the target just follows the real
+        # heading (so a turn that lags the command is not "caught up" later); once the yaw command is zero the
+        # target freezes and the heading error is corrected with a small yaw-rate term.
+        moving = max(abs(cmd[0]), abs(cmd[1]), abs(cmd[2])) > self.walker.params.cmd_deadband
+        turning = abs(cmd[2]) > self.walker.params.cmd_deadband
+        if turning or not moving:
+            self.heading_target = self.imu_yaw()
+        elif self.R_imu is not None:
+            e_yaw = (self.heading_target - self.imu_yaw() + math.pi) % (2 * math.pi) - math.pi
+            wz_c = float(np.clip(gp("heading_kp") * e_yaw, -gp("heading_limit"), gp("heading_limit")))
+            cmd = (cmd[0], cmd[1], wz_c)
         load_ok = self.stance_loaded()
         if self.walker.gen.waiting_for_load:
             if self.wait_t0 is None:
@@ -263,6 +323,8 @@ class BalanceController(Node):
         for _ in range(min(max(int(round(dt / self.walker.params.dt)), 1), 5)):
             joints, st = self.walker.step(cmd, load_ok)
             self.ik_fail = 0 if self.walker.converged else self.ik_fail + 1
+        self.pattern_yaw = st["yaw"]
+        self.contact = {s_: st[s_][2] < 1e-4 for s_ in ("left", "right")}
         a = smoothstep((self.now() - self.walk_t0) / gp("walk_blend_time"))
         q = {j: (1 - a) * self.walk_q0[j] + a * joints[j] for j in BODY_JOINTS}
         # pelvis pitch feedback on the legs that carry weight (same sign convention as standing)
@@ -370,6 +432,7 @@ class BalanceController(Node):
             M = self.data.oMf[self.frames[s]]
             sup += M.act(np.array([FOOT_X, 0.0, -ANKLE_H])) / 2.0
             self.sole[s] = M.act(np.array([FOOT_X, 0.0, -ANKLE_H]))
+            self.sole_body[s] = R.T @ self.sole[s]  # R: pelvis tilt used for the FK base (roll/pitch only)
             w = self.ft.get(s)
             if w is not None and w.force.z > 5.0:
                 fz = w.force.z
@@ -413,6 +476,7 @@ class BalanceController(Node):
             return
 
         com, cop, sup = self.estimate()
+        self.update_estimator()
         self.point(com, self.pub_com)
         self.point(sup, self.pub_sup)
         if cop is not None:

@@ -10,6 +10,7 @@
   <exec_depend>trajectory_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>pinocchio</exec_depend>
   <exec_depend>control_msgs</exec_depend>
   <exec_depend>midibot_description</exec_depend>
