@@ -57,39 +57,39 @@ body_controller:
       - right_wrist_roll_joint
       - neck_yaw_joint
       - head_pitch_joint
-    command_interface: effort
+    command_interface: velocity
     reference_and_state_interfaces: [position, velocity]
     set_current_state_as_first_setpoint: true
     gains:
-      waist_yaw_joint: {p: 300.0, i: 0.0, d: 6.0, u_clamp_max: 120.0, u_clamp_min: -120.0}
-      left_hip_yaw_joint: {p: 150.0, i: 0.0, d: 3.0, u_clamp_max: 60.0, u_clamp_min: -60.0}
-      left_hip_roll_joint: {p: 400.0, i: 0.0, d: 8.0, u_clamp_max: 120.0, u_clamp_min: -120.0}
-      left_hip_pitch_joint: {p: 450.0, i: 0.0, d: 10.0, u_clamp_max: 170.0, u_clamp_min: -170.0}
-      left_knee_joint: {p: 450.0, i: 0.0, d: 10.0, u_clamp_max: 170.0, u_clamp_min: -170.0}
-      left_ankle_pitch_joint: {p: 300.0, i: 0.0, d: 6.0, u_clamp_max: 108.0, u_clamp_min: -108.0}
-      left_ankle_roll_joint: {p: 200.0, i: 0.0, d: 4.0, u_clamp_max: 48.0, u_clamp_min: -48.0}
-      right_hip_yaw_joint: {p: 150.0, i: 0.0, d: 3.0, u_clamp_max: 60.0, u_clamp_min: -60.0}
-      right_hip_roll_joint: {p: 400.0, i: 0.0, d: 8.0, u_clamp_max: 120.0, u_clamp_min: -120.0}
-      right_hip_pitch_joint: {p: 450.0, i: 0.0, d: 10.0, u_clamp_max: 170.0, u_clamp_min: -170.0}
-      right_knee_joint: {p: 450.0, i: 0.0, d: 10.0, u_clamp_max: 170.0, u_clamp_min: -170.0}
-      right_ankle_pitch_joint: {p: 300.0, i: 0.0, d: 6.0, u_clamp_max: 108.0, u_clamp_min: -108.0}
-      right_ankle_roll_joint: {p: 200.0, i: 0.0, d: 4.0, u_clamp_max: 48.0, u_clamp_min: -48.0}
-      left_shoulder_pitch_joint: {p: 120.0, i: 0.0, d: 2.5, u_clamp_max: 60.0, u_clamp_min: -60.0}
-      left_shoulder_roll_joint: {p: 120.0, i: 0.0, d: 2.5, u_clamp_max: 60.0, u_clamp_min: -60.0}
-      left_shoulder_yaw_joint: {p: 50.0, i: 0.0, d: 1.0, u_clamp_max: 34.0, u_clamp_min: -34.0}
-      left_elbow_joint: {p: 100.0, i: 0.0, d: 2.0, u_clamp_max: 60.0, u_clamp_min: -60.0}
-      left_wrist_yaw_joint: {p: 12.0, i: 0.0, d: 0.25, u_clamp_max: 10.6, u_clamp_min: -10.6}
-      left_wrist_pitch_joint: {p: 12.0, i: 0.0, d: 0.25, u_clamp_max: 10.6, u_clamp_min: -10.6}
-      left_wrist_roll_joint: {p: 12.0, i: 0.0, d: 0.25, u_clamp_max: 10.6, u_clamp_min: -10.6}
-      right_shoulder_pitch_joint: {p: 120.0, i: 0.0, d: 2.5, u_clamp_max: 60.0, u_clamp_min: -60.0}
-      right_shoulder_roll_joint: {p: 120.0, i: 0.0, d: 2.5, u_clamp_max: 60.0, u_clamp_min: -60.0}
-      right_shoulder_yaw_joint: {p: 50.0, i: 0.0, d: 1.0, u_clamp_max: 34.0, u_clamp_min: -34.0}
-      right_elbow_joint: {p: 100.0, i: 0.0, d: 2.0, u_clamp_max: 60.0, u_clamp_min: -60.0}
-      right_wrist_yaw_joint: {p: 12.0, i: 0.0, d: 0.25, u_clamp_max: 10.6, u_clamp_min: -10.6}
-      right_wrist_pitch_joint: {p: 12.0, i: 0.0, d: 0.25, u_clamp_max: 10.6, u_clamp_min: -10.6}
-      right_wrist_roll_joint: {p: 12.0, i: 0.0, d: 0.25, u_clamp_max: 10.6, u_clamp_min: -10.6}
-      neck_yaw_joint: {p: 6.0, i: 0.0, d: 0.12, u_clamp_max: 4.1, u_clamp_min: -4.1}
-      head_pitch_joint: {p: 6.0, i: 0.0, d: 0.12, u_clamp_max: 4.1, u_clamp_min: -4.1}
+      waist_yaw_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 16.546, u_clamp_min: -16.546}
+      left_hip_yaw_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 18.431, u_clamp_min: -18.431}
+      left_hip_roll_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 16.546, u_clamp_min: -16.546}
+      left_hip_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 8.378, u_clamp_min: -8.378}
+      left_knee_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 8.378, u_clamp_min: -8.378}
+      left_ankle_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 16.588, u_clamp_min: -16.588}
+      left_ankle_roll_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 16.588, u_clamp_min: -16.588}
+      right_hip_yaw_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 18.431, u_clamp_min: -18.431}
+      right_hip_roll_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 16.546, u_clamp_min: -16.546}
+      right_hip_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 8.378, u_clamp_min: -8.378}
+      right_knee_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 8.378, u_clamp_min: -8.378}
+      right_ankle_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 16.588, u_clamp_min: -16.588}
+      right_ankle_roll_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 16.588, u_clamp_min: -16.588}
+      left_shoulder_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 18.431, u_clamp_min: -18.431}
+      left_shoulder_roll_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 18.431, u_clamp_min: -18.431}
+      left_shoulder_yaw_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 11.624, u_clamp_min: -11.624}
+      left_elbow_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 18.431, u_clamp_min: -18.431}
+      left_wrist_yaw_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 4.817, u_clamp_min: -4.817}
+      left_wrist_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 4.817, u_clamp_min: -4.817}
+      left_wrist_roll_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 4.817, u_clamp_min: -4.817}
+      right_shoulder_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 18.431, u_clamp_min: -18.431}
+      right_shoulder_roll_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 18.431, u_clamp_min: -18.431}
+      right_shoulder_yaw_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 11.624, u_clamp_min: -11.624}
+      right_elbow_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 18.431, u_clamp_min: -18.431}
+      right_wrist_yaw_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 4.817, u_clamp_min: -4.817}
+      right_wrist_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 4.817, u_clamp_min: -4.817}
+      right_wrist_roll_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 4.817, u_clamp_min: -4.817}
+      neck_yaw_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 4.817, u_clamp_min: -4.817}
+      head_pitch_joint: {p: 40.0, i: 0.0, d: 0.0, u_clamp_max: 4.817, u_clamp_min: -4.817}
 
 left_hand_controller:
   ros__parameters:

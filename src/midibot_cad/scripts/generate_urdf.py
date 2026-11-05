@@ -452,6 +452,15 @@ def joint_damping(name, group):
     return 0.5
 
 
+# How the body joints are driven in simulation:
+#   "velocity": position servo (pid_controller P on joint error -> joint velocity command). Gazebo enforces the
+#               commanded velocity every physics step, limited by the joint effort rating, like the inner loop
+#               of a real quasi-direct-drive actuator (stiff, well damped, torque-limited).
+#   "effort":   torque-mode PD (compliant; limited by the 500 Hz torque loop - one-leg stance sags/falls).
+BODY_DRIVE = "velocity"
+VEL_P = 40.0  # 1/s: position-error gain of the velocity servo (error 0.01 rad -> 0.4 rad/s command)
+
+
 def pd_gains(name):
     """Joint PD gains (Nm/rad, Nms/rad) for torque-mode control, sized per actuator class."""
     # Values give a stable passive stance. Higher leg gains were tried while the balance loop was starved
@@ -483,7 +492,8 @@ def write_ros2_control():
         # (midibot_control/hand_coupler) sends linkage-consistent targets for all 12 joints per hand.
         mimic_attr = ' mimic="false"' if j.mimic else ""
         out.append(f'      <joint name="{j.name}"{mimic_attr}>'
-                   '<command_interface name="position"/><command_interface name="effort"/>'
+                   '<command_interface name="position"/><command_interface name="velocity"/>'
+                   '<command_interface name="effort"/>'
                    '<state_interface name="position"><param name="initial_value">0.0</param></state_interface>'
                    '<state_interface name="velocity"/><state_interface name="effort"/></joint>')
     out.append('      <sensor name="pelvis_imu"><state_interface name="orientation.x"/>'
@@ -519,14 +529,19 @@ def write_ros2_control():
           "    frame_id: imu_link", ""]
     for g, names in groups.items():
         if g == "body":
-            # Body: torque-mode joint PD (pid_controller) tracking a streamed position/velocity reference
+            # Body: joint servo (pid_controller, see BODY_DRIVE) tracking a streamed position/velocity reference
             # on /body_controller/reference (no trajectory interpolation between the streamed setpoints).
             y += ["body_controller:", "  ros__parameters:", "    dof_names:"] + [f"      - {n}" for n in names]
-            y += ["    command_interface: effort", "    reference_and_state_interfaces: [position, velocity]",
+            y += [f"    command_interface: {BODY_DRIVE}", "    reference_and_state_interfaces: [position, velocity]",
                   "    set_current_state_as_first_setpoint: true", "    gains:"]
             for n in names:
-                kp, kd = pd_gains(n)
                 eff = next(j for j in joints if j.name == n)
+                if BODY_DRIVE == "velocity":
+                    vmax = eff.vel if eff.vel is not None else ACT[eff.act]["vel"]
+                    y += [f"      {n}: {{p: {VEL_P}, i: 0.0, d: 0.0, "
+                          f"u_clamp_max: {vmax:.3f}, u_clamp_min: {-vmax:.3f}}}"]
+                    continue
+                kp, kd = pd_gains(n)
                 tmax = eff.effort if eff.effort is not None else ACT[eff.act]["peak"]
                 y += [f"      {n}: {{p: {float(kp)}, i: 0.0, d: {float(kd)}, "
                       f"u_clamp_max: {tmax:.1f}, u_clamp_min: {-tmax:.1f}}}"]
