@@ -208,8 +208,27 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
   real IMU without a magnetometer will drift in yaw, so a real deployment needs a yaw reference.
 - Heading hold: while a yaw rate is commanded the target follows the real heading; on straight walks the
   target freezes and the yaw-rate command is corrected (`heading_kp` 0.5 1/s, limit 0.1 rad/s).
-- Not done / known limits: the estimate is not yet used to correct the footsteps (next: capture-point /
-  DCM stepping); the turn is slower than commanded; stepping over obstacles, uneven ground and push recovery by
+- **Capture-point (DCM) stepping, evaluated (2026-11-05): no measurable benefit yet, so it is OFF by default.**
+  - Push-recovery baseline of the open-loop walker (rigid servo joints, 0.2 s horizontal push on the pelvis, see
+    `walk_push_test.py`): 10 N*s while walking survives 5 of 6 (one sideways fall); 15 N*s is mixed (forward 1 of
+    3, back/left survived once each); 20 N*s falls in all four directions (0 of 4). Standing push limit with the
+    rigid drive: 18 N*s forward survives, 18 N*s backward and 26 N*s forward fall.
+  - Why stepping from standing buys little: for 26 N*s the capture point is ~0.18 m ahead of the CoM and, with
+    ~0.3 s to land a foot, it grows to ~0.5 m, beyond the leg's reach; a recovery step only extends the limit a
+    few N*s beyond ankle/hip balancing. Sideways recovery would need a crossing step. Not implemented.
+  - `midibot_locomotion/dcm.py` (DCM, capture step, foothold correction that predicts the error to touchdown) and
+    `WalkGenerator.adjust_foothold` / `dcm_feedback` (rate-limited landing shift, replans the next steps, width and
+    reach limits, frozen late in the swing) are implemented and unit-tested; the controller measures the DCM and
+    can apply it (`dcm_enable`, `dcm_deadband`, `dcm_lateral`, ...). A/B in simulation, 3 runs each: forward 15 N*s
+    1/3 vs 1/3 survived, backward 20 N*s 0/3 vs 0/3 (earlier single runs that looked better or worse were noise;
+    shifting the landing sideways looked harmful and is disabled by default).
+  - Lesson: the estimator's velocity (IMU-driven) is too noisy for a DCM (+-0.1..0.15 m/s -> 3-4 cm of DCM
+    error); the DCM uses a windowed derivative of the leg-odometry position, applied equally to the plan so the lag
+    cancels. Nominal measured-minus-planned DCM error is still 2-2.6 cm rms (max ~8 cm), hence the 5 cm deadband.
+  - Likely limit: the pushes fail by tipping about the stance foot / saturating the stance ankle torque during single
+    support, which a foothold change a step later cannot fix. Next ideas: faster reaction inside the current
+    stance (ankle/hip torque, CoP shaping), a shorter single-support phase, or a stronger ankle roll rating.
+- Not done / known limits: the estimate is available for footstep correction but that did not help yet (see the DCM paragraph); the turn is slower than commanded; stepping over obstacles, uneven ground and push recovery by
   stepping are out of scope for this phase.
 - Tools: gait timing and walking gains are ROS parameters (`gait_*`, `walk_*`); `ros2 param set
   /balance_controller log_file <prefix>` writes a per-step trace `<prefix>.walk.csv`.

@@ -80,6 +80,12 @@ class BalanceController(Node):
         p("gait_step_height", 0.03)
         p("heading_kp", 0.5)        # 1/s: yaw-rate correction per rad of heading error while walking
         p("heading_limit", 0.10)    # rad/s: limit of the heading correction
+        p("dcm_enable", False)       # capture-point (DCM) foothold feedback while walking
+        p("dcm_limit", 0.10)        # m: largest foothold shift
+        p("dcm_deadband", 0.015)    # m: DCM errors below this are estimator noise
+        p("dcm_lateral", 0.0)       # fraction of the sideways correction (0 = sagittal only; sideways hurt in sim)
+        p("dcm_rate", 0.6)          # m/s: how fast the landing point may move
+        p("dcm_filter", 0.3)        # low-pass factor on the DCM error
         p("walk_tilt_kp", 0.3)      # rad of stance hip pitch per rad of pelvis pitch while walking
         p("load_wait_max", 0.25)    # s: the load gate never holds the swing longer than this
         p("load_transfer", 0.80)    # fraction of the weight the stance foot must carry before the swing starts
@@ -108,6 +114,14 @@ class BalanceController(Node):
         self.debug_t = None
         self.walker = None
         self.est = BaseEstimator()
+        self.dcm_mid = np.zeros(2)
+        self.dcm_yaw0 = 0.0
+        self.dcm_err_f = np.zeros(2)
+        self.hist_meas, self.hist_plan = [], []
+        self.dcm_adj = (0.0, 0.0)
+        self.xi_meas_log, self.xi_plan_log = None, np.zeros(2)
+        self.dcm_dbg = None
+        self.hist_meas, self.hist_plan = [], []
         self.contact = {"left": True, "right": True}
         self.R_imu = None
         self.acc = np.zeros(3)
@@ -262,6 +276,7 @@ class BalanceController(Node):
         self.walker.reset()
         self.heading_target = self.imu_yaw()  # heading hold target starts at the heading at walk start
         self.pattern_yaw = 0.0
+        self.anchor_dcm_frame()
         # blend from the current setpoints (not the sagging measured angles) into the pattern
         self.walk_q0 = {j: self.q_cmd.get(j, self.q_meas.get(j, 0.0)) for j in BODY_JOINTS}
         self.walk_t0 = self.now()
@@ -273,6 +288,38 @@ class BalanceController(Node):
         self.mode = "walk"
         self.state = "WALKING"
         self.get_logger().info("mode -> walk")
+
+    def anchor_dcm_frame(self):
+        """The pattern's planning frame W: origin = mid of the soles at walk start, x along the heading."""
+        self.dcm_yaw0 = self.imu_yaw()
+        if self.est.initialised:
+            self.dcm_mid = 0.5 * (self.est.foot("left")[:2] + self.est.foot("right")[:2])
+        self.dcm_err_f = np.zeros(2)
+        self.hist_meas, self.hist_plan = [], []
+        self.dcm_adj = (0.0, 0.0)
+
+    def measured_com_w(self):
+        """Measured whole-body CoM position (xy) in the planning frame W, or None. The position comes from leg
+        odometry (anchored on the stance feet) and is smooth; the estimator's velocity is not used because the
+        IMU accelerometer rings on every impact."""
+        if not self.est.initialised or getattr(self, "com_est", None) is None or self.R_imu is None:
+            return None
+        yaw = self.imu_yaw()
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        rel_w = np.array([cy * self.com_est[0] - sy * self.com_est[1], sy * self.com_est[0] + cy * self.com_est[1]])
+        c0, s0 = math.cos(-self.dcm_yaw0), math.sin(-self.dcm_yaw0)
+        d = self.est.p[:2] + rel_w - self.dcm_mid
+        return np.array([c0 * d[0] - s0 * d[1], s0 * d[0] + c0 * d[1]])
+
+    @staticmethod
+    def window_velocity(hist, t, pos, span=0.15):
+        """Velocity from the position `span` seconds ago (the same filter is applied to the plan, so the lag
+        cancels in the measured-minus-planned DCM error)."""
+        hist.append((t, np.array(pos)))
+        while len(hist) > 2 and t - hist[1][0] >= span:
+            hist.pop(0)
+        t0, p0 = hist[0]
+        return (np.array(pos) - p0) / (t - t0) if t - t0 > 0.05 else np.zeros(2)
 
     def current_cmd(self):
         if self.stop_requested or self.now() - self.cmd_t > self.get_parameter("cmd_timeout").value:
@@ -319,6 +366,24 @@ class BalanceController(Node):
                 load_ok = True  # do not let the CoM slide onto the foot centre: go ahead
         else:
             self.wait_t0 = None
+        # capture-point foothold feedback: measured DCM vs the pattern's DCM -> shift the current landing point
+        gen = self.walker.gen
+        w_ = math.sqrt(9.81 / self.walker.params.zc)
+        pos_m = self.measured_com_w()
+        pos_p = np.array([gen.x_axis.x[0], gen.y_axis.x[0]])
+        xi_meas = None
+        if pos_m is not None:
+            v_m = self.window_velocity(self.hist_meas, self.now(), pos_m)
+            v_p = self.window_velocity(self.hist_plan, self.now(), pos_p)
+            xi_meas, xi_plan = pos_m + v_m / w_, pos_p + v_p / w_
+            self.xi_meas_log, self.xi_plan_log = xi_meas, xi_plan
+            self.dcm_dbg = (pos_m, v_m, pos_p, v_p)
+            self.dcm_err_f = (1 - gp("dcm_filter")) * self.dcm_err_f + gp("dcm_filter") * (xi_meas - xi_plan)
+        if gp("dcm_enable") and moving and xi_meas is not None:
+            gen.dcm_feedback(xi_plan + self.dcm_err_f, xi_plan, gp("dcm_limit"), gp("dcm_deadband"), gp("dcm_rate"),
+                            gp("dcm_lateral"))
+            cur = gen.steps[gen.k]
+            self.dcm_adj = tuple(cur.adj) if cur.kind == "walk" else (0.0, 0.0)
         joints, st = None, None
         for _ in range(min(max(int(round(dt / self.walker.params.dt)), 1), 5)):
             joints, st = self.walker.step(cmd, load_ok)
@@ -381,12 +446,18 @@ class BalanceController(Node):
         if gp("log_file"):
             if not hasattr(self, "_wlog"):
                 self._wlog = open(gp("log_file") + ".walk.csv", "w")
-                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy,ex,ey\n")
+                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy,ex,ey,dcm_ex,dcm_ey,adj_x,adj_y,xm_x,xm_y,xp_x,xp_y,pm_x,pm_y,vm_x,vm_y,pp_x,pp_y,vp_x,vp_y\n")
             fz = {s_: (self.ft[s_].force.z if s_ in self.ft else 0.0) for s_ in ("left", "right")}
             self._wlog.write(f"{self.now():.3f},{st['phase']},{int(self.walker.gen.waiting_for_load)},"
                              f"{self.rpy[0]:.4f},{self.rpy[1]:.4f},{self.gyro[0]:.4f},{hr:.4f},{h:.4f},"
                              f"{fz['left']:.1f},{fz['right']:.1f},{st['com'][0]:.4f},{st['com'][1]:.4f},"
-                             f"{st['left'][2]:.4f},{st['right'][2]:.4f},{u[0]:.4f},{u[1]:.4f},{ex:.4f},{ey:.4f}\n")
+                             f"{st['left'][2]:.4f},{st['right'][2]:.4f},{u[0]:.4f},{u[1]:.4f},{ex:.4f},{ey:.4f},"
+                             f"{self.dcm_err_f[0]:.4f},{self.dcm_err_f[1]:.4f},{self.dcm_adj[0]:.4f},{self.dcm_adj[1]:.4f},"
+                             f"{(self.xi_meas_log if self.xi_meas_log is not None else (float('nan'),) * 2)[0]:.4f},"
+                             f"{(self.xi_meas_log if self.xi_meas_log is not None else (float('nan'),) * 2)[1]:.4f},"
+                             f"{self.xi_plan_log[0]:.4f},{self.xi_plan_log[1]:.4f},"
+                             + (",".join(f"{v:.4f}" for d in self.dcm_dbg for v in d) if self.dcm_dbg else ",".join(["nan"] * 8))
+                             + "\n")
             self._wlog.flush()
         self.publish(q)
         self.pub_status.publish(String(data="WALKING"))
