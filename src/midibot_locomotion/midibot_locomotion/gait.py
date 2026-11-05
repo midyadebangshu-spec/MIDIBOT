@@ -38,6 +38,7 @@ class GaitParams:
     preview_time: float = 1.0
     cmd_deadband: float = 0.01  # |cmd| below this counts as "stop"
     first_swing: str = "right"
+    max_reach: float = 0.35     # farthest landing from the stance foot (m)
 
 
 @dataclass
@@ -51,6 +52,8 @@ class Step:
     target: tuple = (0.0, 0.0, 0.0)  # swing foot (x, y, yaw) at the end
     stance_from: tuple = (0.0, 0.0)  # ZMP at t0 (xy)
     stance_to: tuple = (0.0, 0.0)    # ZMP during single support (xy)
+    nominal: tuple = None            # planned landing (x, y, yaw) before DCM adjustment
+    adj: tuple = (0.0, 0.0)          # DCM foothold adjustment applied to the landing (xy)
 
 
 def _wrap(a):
@@ -158,7 +161,7 @@ class WalkGenerator:
         t_ds = p.t_ds_first if prev.kind == "hold" else p.t_ds
         st = Step("walk", t0, t0 + t_ds, t0 + t_ds + p.t_ss, swing=swing, start=cur, target=(tx, ty, yaw_t),
                   stance_from=(cur[0], cur[1]) if prev.kind == "walk" else mid,
-                  stance_to=(sx, sy))
+                  stance_to=(sx, sy), nominal=(tx, ty, yaw_t))
         return st
 
     def _feet_after(self, step, feet):
@@ -202,6 +205,52 @@ class WalkGenerator:
             return (st.stance_from[0] + a * (st.stance_to[0] - st.stance_from[0]),
                     st.stance_from[1] + a * (st.stance_to[1] - st.stance_from[1]))
         return st.stance_to
+
+    # ---------------------------------------------------- DCM foothold feedback
+    def adjust_foothold(self, dp, rate=0.6, freeze_s=0.85):
+        """Shift the landing of the current swing step by `dp` (xy, world/planning frame) from its nominal
+        position, at most `rate` m/s so the swing foot never jumps, and replan the next steps from it.
+        Frozen late in the swing (after `freeze_s` of the swing) so the foot does not move near touchdown."""
+        st = self.steps[self.k]
+        if st.kind != "walk" or st.nominal is None:
+            return
+        if self.t >= st.t_ds_end:
+            s = (self.t - st.t_ds_end) / (st.t1 - st.t_ds_end)
+            if s >= freeze_s:
+                return
+        goal = np.asarray(dp, dtype=float)
+        adj = np.asarray(st.adj, dtype=float)
+        step = goal - adj
+        n = np.linalg.norm(step)
+        lim = rate * self.p.dt
+        if n > lim:
+            step *= lim / n
+        adj = adj + step
+        tx, ty = st.nominal[0] + adj[0], st.nominal[1] + adj[1]
+        stance = "left" if st.swing == "right" else "right"
+        sx, sy, syaw = self.feet[stance]
+        rel = _rot(-syaw) @ np.array([tx - sx, ty - sy])
+        sign = 1.0 if st.swing == "left" else -1.0
+        if sign * rel[1] < self.p.min_width:  # never cross or crowd the stance foot
+            rel[1] = sign * self.p.min_width
+        n = np.linalg.norm(rel)
+        if n > self.p.max_reach:
+            rel *= self.p.max_reach / n
+        w = _rot(syaw) @ rel + np.array([sx, sy])
+        st.adj = (w[0] - st.nominal[0], w[1] - st.nominal[1])
+        st.target = (w[0], w[1], st.target[2])
+        self._extend_plan()  # next steps (and their ZMP references) follow the adjusted foot
+
+    def dcm_feedback(self, xi_meas, xi_plan, limit=0.10, deadband=0.01, rate=0.6, lateral=1.0):
+        """Adjust the current landing from the measured vs planned DCM (both xy, planning frame)."""
+        from .dcm import foothold_correction
+        st = self.steps[self.k]
+        if st.kind != "walk":
+            return
+        nxt = self.steps[self.k + 1] if self.k + 1 < len(self.steps) else st
+        dp = foothold_correction(xi_meas, xi_plan, self.p.zc, st.t1 - self.t, nxt.t1 - nxt.t0, limit, deadband)
+        dp = np.array([dp[0], dp[1] * lateral])  # lateral < 1 weakens (0 disables) the sideways correction
+        self.adjust_foothold(dp, rate)
 
     # --------------------------------------------------------------- stepping
     @property
