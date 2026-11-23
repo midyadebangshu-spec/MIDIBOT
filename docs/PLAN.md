@@ -255,6 +255,28 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
 - Tools: gait timing and walking gains are ROS parameters (`gait_*`, `walk_*`); `ros2 param set
   /balance_controller log_file <prefix>` writes a per-step trace `<prefix>.walk.csv`.
 
+## 11b. Locomotion brain (fly-inspired fall awareness), stage 1 (2026-11)
+`midibot_locomotion/brain.py` is a small network that only watches locomotion; it is **inspired by** the fly's
+structure (halteres = gyro rates, body lean, a fast-attack / slow-decay "alert" unit, SLOW / HALT / BRACE command
+neurons with hysteresis), **not** a model of the real connectome. It outputs a fall risk, the fall direction and a
+graded decision; the controller publishes `/loco/fall_risk` and `/loco/brain`.
+- Reflexes wired in (`brain_enable`, default on): SLOW halves the command; HALT / BRACE zero it, bring the swinging foot
+  straight down within ~0.18 s (`WalkGenerator.emergency_stop`, continuous from where the foot is) and stiffen the ankle
+  balance reflexes to standing-like gains (`brace_ankle_kp/kd`).
+- Awareness works: in sideways pushes it called HALT at ~4 deg of lean and BRACE at 8-12 deg within 0.06-0.1 s of the
+  push; in normal walking it never fired (alert 0.000 in 2 valid regression runs; the tilt and rate channels peak at 0.04).
+  The capture-point-error channel is OFF (`brain_use_dcm`): it saturated during turns (false alarms, a turn halted
+  early).
+- Does it prevent falls? Only slightly so far. Pushes of 15 N*s while walking, 12 runs each (3 per direction): falls
+  5/12 without the brain, 3/12 with it (not significant). Backward and forward pushes mostly survive either way.
+- Why it is limited (measured): after a sideways push toward the stance side, the joints are NOT saturated (ankle roll
+  ~16 of 48 Nm, hip roll ~23 of 120 Nm). The robot tips as a rigid body over the outer edge of the stance foot with both
+  feet on the ground, because its capture point is beyond the support. No ankle effort fixes that; only widening the support
+  or moving the centre of mass does. A crossing step cannot widen it: the leg IK can place the swing foot at most ~5 cm
+  beyond the stance foot (hip-roll limits -0.35 rad), and only if it overlaps the stance foot.
+- Next (stage 2/3): body angle / arms: hip strategy and arm motion to shift the centre of mass against the fall (a few cm),
+  and a sagittal capture step (forward / backward pushes, where the leg can reach 0.3 m).
+
 ## 12. Known risks
 - ZMP walking is sensitive to mass/inertia accuracy — Phase 1 mass properties matter.
 - 41 actuators + dexterous hands make Gazebo slower than real time on CPU; hands may be simplified

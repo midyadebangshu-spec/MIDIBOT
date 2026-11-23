@@ -30,9 +30,10 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Imu, JointState
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 from control_msgs.msg import MultiDOFCommand, MultiDOFStateStamped
 from midibot_locomotion.pose import ANKLE_H, BODY_JOINTS, FOOT_X, READY  # noqa: F401
+from midibot_locomotion.brain import HALT, LocomotionBrain
 from midibot_locomotion.estimator import BaseEstimator
 from midibot_locomotion.gait import GaitParams
 from midibot_locomotion.walker import WalkPattern
@@ -86,6 +87,10 @@ class BalanceController(Node):
         p("dcm_lateral", 0.0)       # fraction of the sideways correction (0 = sagittal only; sideways hurt in sim)
         p("dcm_rate", 0.6)          # m/s: how fast the landing point may move
         p("dcm_filter", 0.3)        # low-pass factor on the DCM error
+        p("brain_use_dcm", False)   # feed the capture-point error to the brain (too noisy while turning: false alarms)
+        p("brain_enable", True)     # fly-inspired fall awareness + reflexes while walking (midibot_locomotion.brain)
+        p("brace_ankle_kp", [0.6, 0.5])    # ankle CoM gains while braced (standing-like, stronger sagittal)
+        p("brace_ankle_kd", [0.15, 0.12])
         p("walk_tilt_kp", 0.3)      # rad of stance hip pitch per rad of pelvis pitch while walking
         p("load_wait_max", 0.60)    # s: the swing gate never holds a swing longer than this
         p("swing_gate_rate", 0.15)  # rad/s: roll rate must be below this before a swing starts
@@ -117,6 +122,8 @@ class BalanceController(Node):
         self.debug_t = None
         self.walker = None
         self.est = BaseEstimator()
+        self.brain = LocomotionBrain()
+        self.brain_out = None
         self.dcm_mid = np.zeros(2)
         self.dcm_yaw0 = 0.0
         self.dcm_err_f = np.zeros(2)
@@ -162,6 +169,8 @@ class BalanceController(Node):
         self.pub_ref = self.create_publisher(MultiDOFCommand, "/body_controller/reference", 10)
         self.pub_status = self.create_publisher(String, "/loco/status", 10)
         self.pub_odom = self.create_publisher(Odometry, "/loco/odom", 10)
+        self.pub_risk = self.create_publisher(Float32, "/loco/fall_risk", 10)
+        self.pub_brain = self.create_publisher(String, "/loco/brain", 10)
         self.pub_com = self.create_publisher(PointStamped, "/loco/com", 10)
         self.pub_cop = self.create_publisher(PointStamped, "/loco/cop", 10)
         self.pub_sup = self.create_publisher(PointStamped, "/loco/support_center", 10)
@@ -284,6 +293,8 @@ class BalanceController(Node):
         self.heading_target = self.imu_yaw()  # heading hold target starts at the heading at walk start
         self.pattern_yaw = 0.0
         self.anchor_dcm_frame()
+        self.brain.reset()
+        self.brain_out = None
         # blend from the current setpoints (not the sagging measured angles) into the pattern
         self.walk_q0 = {j: self.q_cmd.get(j, self.q_meas.get(j, 0.0)) for j in BODY_JOINTS}
         self.walk_t0 = self.now()
@@ -361,6 +372,23 @@ class BalanceController(Node):
         cmd = self.current_cmd()
         if self.ik_fail > 10:  # IK keeps failing: stop walking instead of freezing mid-step
             cmd = (0.0, 0.0, 0.0)
+        # Locomotion brain: fall awareness. SLOW halves the command; HALT/BRACE zero it and bring the swing foot
+        # down at once (the gait then stands); BRACE/HALT also stiffen the ankle balance reflexes below.
+        self.brain_out = None
+        if gp("brain_enable") and self.rpy is not None:
+            err = tuple(self.dcm_err_f) if (gp("brain_use_dcm") and self.xi_meas_log is not None) else None
+            out = self.brain.update(dt, self.rpy[0], self.rpy[1], self.gyro[0], self.gyro[1], err)
+            self.brain_out = out
+            if out.mode >= HALT:
+                cmd = (0.0, 0.0, 0.0)
+                if self.walker.gen.emergency_stop():
+                    self.get_logger().warn(
+                        f"brain: {out.name} alert {out.alert:.2f} lean ({out.lean[0]:+.2f},{out.lean[1]:+.2f}) "
+                        f"{math.degrees(out.lean_mag):.1f} deg -> emergency stop")
+            else:
+                cmd = tuple(c * out.cmd_scale for c in cmd)
+            self.pub_risk.publish(Float32(data=float(out.alert)))
+            self.pub_brain.publish(String(data=out.name))
         # Heading hold on straight walks only. While a yaw rate is commanded the target just follows the real
         # heading (so a turn that lags the command is not "caught up" later); once the yaw command is zero the
         # target freezes and the heading error is corrected with a small yaw-rate term.
@@ -426,8 +454,10 @@ class BalanceController(Node):
             self.walk_err = (1 - fa2) * prev + fa2 * err
             derr = (self.walk_err - prev) / max(dt, 1e-3)
             ga = lambda n: np.array(gp(n), dtype=float)  # noqa: E731
-            u = np.clip(ga("walk_ankle_kp") * self.walk_err + ga("walk_ankle_kd") * derr,
-                        -gp("walk_ankle_limit"), gp("walk_ankle_limit")) * a
+            kp, kd = ga("walk_ankle_kp"), ga("walk_ankle_kd")
+            if self.brain_out is not None and self.brain_out.mode >= HALT:  # braced: standing-like reflex gains
+                kp, kd = np.maximum(kp, ga("brace_ankle_kp")), np.maximum(kd, ga("brace_ankle_kd"))
+            u = np.clip(kp * self.walk_err + kd * derr, -gp("walk_ankle_limit"), gp("walk_ankle_limit")) * a
             for s_ in stance:
                 q[f"{s_}_ankle_pitch_joint"] += u[0]
                 q[f"{s_}_hip_pitch_joint"] += -u[0]
@@ -460,7 +490,7 @@ class BalanceController(Node):
         if gp("log_file"):
             if not hasattr(self, "_wlog"):
                 self._wlog = open(gp("log_file") + ".walk.csv", "w")
-                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy,ex,ey,dcm_ex,dcm_ey,adj_x,adj_y,xm_x,xm_y,xp_x,xp_y,pm_x,pm_y,vm_x,vm_y,pp_x,pp_y,vp_x,vp_y,imu_lag,eff_lar,eff_rar,eff_lhr,eff_rhr,eff_lap,eff_rap\n")
+                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy,ex,ey,dcm_ex,dcm_ey,adj_x,adj_y,xm_x,xm_y,xp_x,xp_y,pm_x,pm_y,vm_x,vm_y,pp_x,pp_y,vp_x,vp_y,imu_lag,eff_lar,eff_rar,eff_lhr,eff_rhr,eff_lap,eff_rap,brain_mode,alert,s_tilt,s_rate,s_dcm\n")
             fz = {s_: (self.ft[s_].force.z if s_ in self.ft else 0.0) for s_ in ("left", "right")}
             self._wlog.write(f"{self.now():.3f},{st['phase']},{int(self.walker.gen.waiting_for_load)},"
                              f"{self.rpy[0]:.4f},{self.rpy[1]:.4f},{self.gyro[0]:.4f},{hr:.4f},{h:.4f},"
@@ -474,7 +504,10 @@ class BalanceController(Node):
                              + f",{self.sim_t - self.imu_t:.4f},"
                              + ",".join(f"{self.eff_meas.get(j, float('nan')):.2f}" for j in (
                                  'left_ankle_roll_joint', 'right_ankle_roll_joint', 'left_hip_roll_joint',
-                                 'right_hip_roll_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint')) + "\n")
+                                 'right_hip_roll_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint'))
+                             + (f",{self.brain_out.mode},{self.brain_out.alert:.3f},{self.brain_out.sensors[0]:.3f},"
+                                f"{self.brain_out.sensors[1]:.3f},{self.brain_out.sensors[2]:.3f}\n"
+                                if self.brain_out is not None else ",-1,nan,nan,nan,nan\n"))
             self._wlog.flush()
         self.publish(q)
         self.pub_status.publish(String(data="WALKING"))

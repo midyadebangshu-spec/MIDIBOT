@@ -54,6 +54,8 @@ class Step:
     stance_to: tuple = (0.0, 0.0)    # ZMP during single support (xy)
     nominal: tuple = None            # planned landing (x, y, yaw) before DCM adjustment
     adj: tuple = (0.0, 0.0)          # DCM foothold adjustment applied to the landing (xy)
+    z0: float = 0.0                  # swing foot height when an emergency landing started
+    emergency: bool = False          # True: the swing foot is being brought down quickly (no apex)
 
 
 def _wrap(a):
@@ -241,6 +243,39 @@ class WalkGenerator:
         st.target = (w[0], w[1], st.target[2])
         self._extend_plan()  # next steps (and their ZMP references) follow the adjusted foot
 
+    def emergency_stop(self, t_land=0.18):
+        """Reflex: stop walking *now*. A swing foot already in the air is re-timed to come straight down to the
+        'feet together' spot beside the stance foot within `t_land` seconds (continuous from where it is); a step
+        that has not left the ground becomes a stand. The following steps are replanned (they will be holds).
+        Returns True if something was changed."""
+        st = self.steps[self.k]
+        if st.kind != "walk" or st.emergency:
+            return False
+        mid = self._mid()
+        if self.t < st.t_ds_end:  # swing not started: just stand
+            st.kind, st.swing = "hold", ""
+            st.t_ds_end = st.t0
+            st.stance_from = st.stance_to = mid
+            st.t1 = max(st.t1, self.t + 0.3)
+            self._extend_plan()
+            return True
+        cur = self.state[st.swing]  # (x, y, z, yaw) of the swinging foot right now
+        stance = "left" if st.swing == "right" else "right"
+        sx, sy, syaw = self.feet[stance]
+        sign = 1.0 if st.swing == "left" else -1.0
+        w = self.p.foot_width
+        target = (sx - math.sin(syaw) * sign * w, sy + math.cos(syaw) * sign * w, syaw)
+        st.start = (cur[0], cur[1], cur[3])
+        st.z0 = cur[2]
+        st.target = target
+        st.nominal = target
+        st.adj = (0.0, 0.0)
+        st.t_ds_end = self.t
+        st.t1 = self.t + t_land
+        st.emergency = True
+        self._extend_plan()
+        return True
+
     def dcm_feedback(self, xi_meas, xi_plan, limit=0.10, deadband=0.01, rate=0.6, lateral=1.0):
         """Adjust the current landing from the measured vs planned DCM (both xy, planning frame)."""
         from .dcm import foothold_correction
@@ -317,7 +352,10 @@ class WalkGenerator:
                 phase = "ss"
                 s = (self.t - st.t_ds_end) / (st.t1 - st.t_ds_end)
                 u = _cycloid(s)
-                z = self.p.step_height * 0.5 * (1 - math.cos(2 * math.pi * min(max(s, 0.0), 1.0)))
+                if st.emergency:
+                    z = st.z0 * (1.0 - u)  # straight down from where the foot was
+                else:
+                    z = self.p.step_height * 0.5 * (1 - math.cos(2 * math.pi * min(max(s, 0.0), 1.0)))
                 x0, y0, a0 = st.start
                 x1, y1, a1 = st.target
                 feet[st.swing] = (x0 + u * (x1 - x0), y0 + u * (y1 - y0), z, a0 + u * _wrap(a1 - a0))
