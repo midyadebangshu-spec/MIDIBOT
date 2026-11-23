@@ -1,0 +1,46 @@
+name: CI
+
+# Fast checks that do not need Gazebo: the Gazebo acceptance tests (walk_test, push_test, walk_push_test)
+# still have to be run by hand, see CLAUDE.md.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    container: ros:jazzy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3-pip python3-pytest python3-numpy \
+            python3-colcon-common-extensions ros-jazzy-xacro ros-jazzy-pinocchio \
+            ros-jazzy-nav-msgs ros-jazzy-control-msgs ros-jazzy-geometry-msgs git
+          pip3 install --break-system-packages trimesh
+
+      - name: Generated files are up to date
+        # generate_urdf.py writes the URDF/xacro, controller config and mass budget; a hand edit or a forgotten
+        # re-run shows up as a diff.
+        run: |
+          python3 src/midibot_cad/scripts/generate_urdf.py > /dev/null
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git diff --exit-code -- src/midibot_description docs/MASS_BUDGET.md
+
+      - name: Build the Gazebo-independent packages
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install --packages-select midibot_description midibot_locomotion midibot_control
+
+      - name: Offline tests (walking library, estimator, DCM, whole-body checks on the real URDF)
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          xacro src/midibot_description/urdf/midibot.urdf.xacro sim:=false sensors:=false \
+            vendor_meshes:=false dxl_meshes:=false controllers_file:=none > /tmp/midibot.urdf
+          MIDIBOT_URDF=/tmp/midibot.urdf python3 -m pytest -q src/midibot_locomotion/test
