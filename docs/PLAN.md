@@ -179,9 +179,11 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
 - Controller: `/loco/mode` `walk` -> WALKING (1 s blend from the current setpoints, then the pattern);
   `stand` -> feet together, then a normal transition back to BALANCING. `/loco/cmd_vel` (Twist) times out to
   zero after 0.5 s. Heading hold on straight walks (see the state estimator below). A load-transfer gate (foot F/T) is available but never holds a swing longer than
-  `load_wait_max`; with the rigid joints the foot loads flicker between feet, so it mostly times out. Hip-roll
-  feedback (single support only) and the stance ankle CoM loop are present but OFF (gains 0): with the rigid
-  servo joints the roll feedback appeared to hurt (3 of 4 runs passed with it on, 4 of 4 with it off).
+  `load_wait_max`; with the rigid joints the foot loads flicker between feet, so it mostly times out. A swing gate on
+  the IMU (roll rate < 0.15 rad/s and roll < 0.04 rad before a swing may start) is on but showed no measurable
+  effect. **The stance ankle loop is ON laterally** (`walk_ankle_kp` [0, 0.5], `walk_ankle_kd` [0, 0.12]: measured
+  CoM vs the stance foot against the pattern, ankle roll against hip roll as in standing), which is what made
+  walking reliable (see "Phase 3 hardening"). Hip-roll feedback is OFF (it appeared to hurt).
 - **Body joint drive (the fix that made walking work).** The body joints used a torque-mode PD at 500 Hz
   (`BODY_DRIVE = "effort"`). In one-leg stance the ankle-roll and hip-roll springs are in series and were
   softer than gravity (m g h_com), so the robot fell sideways at the first swing; stiffer torque gains rattled
@@ -193,11 +195,31 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
 - Offline verification (`src/midibot_locomotion/test`, needs pinocchio + the generated URDF): IK converges, leg
   joints stay >0.02 rad from limits and <60 % of the velocity limits, the whole-body CoM follows the LIPM CoM
   within 2 mm, and the ZMP from full-body inverse dynamics stays inside the support box.
-- **Acceptance (`ros2 run midibot_gazebo walk_test.py`, headless, flat ground): PASS.** Runs with the final
-  defaults: 4 of 4 (forward +0.50..+0.59 m, backward -0.40..-0.48 m, turn +90..+105 deg of 137 commanded, back
-  to BALANCING after every stop, straight-walk yaw drift <= 1.6 deg). Earlier configurations: 5 of 5, then
-  turn falls in ~1 of 4 with the roll feedback on. With a rendering camera (sim ~0.3x real time) it passed 1 and
-  fell 1 of 2: walking is not yet shown to be robust to a slow simulator (matters once Phase 4 enables cameras).
+- **Acceptance (`ros2 run midibot_gazebo walk_test.py`, flat ground): PASS, also with the default sensors on.**
+  Final code, sensors on: 6 of 6 runs (forward +0.51..+0.75 m, backward -0.56..-0.60 m, turn +87..+122 deg of
+  137 commanded, back to BALANCING after every stop, estimator error <= 4.4 cm). The lateral ankle loop has had
+  0 falls in 21 sensors-on runs.
+- **Phase 3 hardening (2026-11): walking with the default sensors on was only ~60-65 % reliable before.**
+  - Baseline, sensors on (RGB-D camera + lidar rendering): 3/5, 3/5, 3/5 passes (falls in the forward, backward
+    and turn segments), 11/15 with a slower gait. With sensors off the same code passed 6/7 (and 5/5 in one batch).
+    The simulator ran at ~1.0x real time with the sensors on, so the earlier "0.3x real time" remark was wrong.
+  - Not the cause: IMU latency (median 0 ms, max 10 ms with sensors on, 4 ms off). Control-step timing is ~10x more
+    irregular with the sensors on (1-3 % of steps off the nominal 10 ms vs 0.03-0.65 %), so the walk is marginally
+    stable and perturbed by jitter, but a sensors-off run also failed once.
+  - Mechanism: in the failing runs the body starts to rock sideways during double support; the roll amplitude grows
+    step by step (0.002, 0.006, 0.011, 0.027 rad ...) until the robot falls. Rigid joints dissipate almost nothing,
+    so each touchdown / lift-off adds roll that nothing removes: a lateral damping term is missing.
+  - Tried without success: swing gate on the IMU or the force sensors (3/5 either way, and with no gate), slower gait
+    0.35 s + 0.35 s (5/5 in the first screening, then 11/15 over 15 runs: a lucky streak), hip-roll rate damping
+    (made it fall within ~9 s), joint velocity feedforward (1 of 10 passed: much worse).
+  - Fix: the lateral CoM-vs-stance-foot ankle loop (values above). Screening 5/5, then **0 falls in 10 more runs**,
+    then 6/6 with the final code. Lesson: confirm any "5 of 5" with ten more runs before believing it.
+  - Side effects / known limits: some forward segments pick up a yaw drift of up to ~30 deg (the heading hold only
+    corrects 0.1 rad/s at most); turning in place slips the feet by a few cm, which the estimator cannot see, so the
+    turn segment's estimator tolerance is 12 cm; the push-recovery limits are unchanged.
+  - CI: a GitHub Actions workflow (build the Gazebo-independent packages, run the offline tests, check the generated
+    files against `generate_urdf.py`) was written and verified in a clean `ros:jazzy` container, but pushing a workflow
+    file needs a GitHub token with the `workflow` scope; it is kept on the local branch `ci-workflow` until that is granted.
 - State estimator (`midibot_locomotion/estimator.py`, published as `/loco/odom`): a Kalman filter in the style of
   Bloesch et al. with state = pelvis position/velocity, both sole positions and the accelerometer bias; it
   predicts with the IMU (orientation + accelerometer) and corrects with leg kinematics and a flat-ground
