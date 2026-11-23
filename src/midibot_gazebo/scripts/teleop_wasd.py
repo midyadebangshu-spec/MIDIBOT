@@ -141,16 +141,19 @@ def main():
         if old is not None:
             import termios
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        if rclpy.ok():
-            node.vx = node.vy = node.wz = 0.0
-            node.send()
-            node.mode("stand")
-            print("\nstopping: returning to the standing pose ...", flush=True)
-            t0 = time.time()
-            while rclpy.ok() and node.status != "BALANCING" and time.time() - t0 < 30.0:
+        try:  # on Ctrl-C rclpy may already have shut the context down: then there is nothing left to send
+            if rclpy.ok():
+                node.vx = node.vy = node.wz = 0.0
                 node.send()
-                rclpy.spin_once(node, timeout_sec=0.1)
-            rclpy.shutdown()
+                node.mode("stand")
+                print("\nstopping: returning to the standing pose ...", flush=True)
+                t0 = time.time()
+                while rclpy.ok() and node.status != "BALANCING" and time.time() - t0 < 30.0:
+                    node.send()
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                rclpy.shutdown()
+        except Exception:  # noqa: BLE001 - shutting down anyway
+            pass
     return 0
 
 
