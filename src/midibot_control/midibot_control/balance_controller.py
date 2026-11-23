@@ -69,8 +69,8 @@ class BalanceController(Node):
         p("walk_roll_ki", 0.0)      # rad of stance hip roll per rad*s of pelvis roll (removes the static sag)
         p("walk_roll_leak", 0.4)    # s: time constant of the roll integrator leak (the stance leg changes each step)
         p("walk_roll_limit", 0.30)  # rad: limit of the total roll correction
-        p("walk_ankle_kp", [0.0, 0.0])  # rad per m of CoM-vs-stance-foot error (sagittal, lateral)
-        p("walk_ankle_kd", [0.0, 0.0])  # rad per m/s
+        p("walk_ankle_kp", [0.0, 0.5])  # rad per m of CoM-vs-stance-foot error (sagittal off, lateral on: the lateral loop damps the sideways rocking)
+        p("walk_ankle_kd", [0.0, 0.12])  # rad per m/s
         p("walk_ankle_limit", 0.15)
         p("gait_t_ss", 0.30)        # s: single support
         p("gait_t_ds", 0.20)        # s: double support between steps
@@ -87,14 +87,17 @@ class BalanceController(Node):
         p("dcm_rate", 0.6)          # m/s: how fast the landing point may move
         p("dcm_filter", 0.3)        # low-pass factor on the DCM error
         p("walk_tilt_kp", 0.3)      # rad of stance hip pitch per rad of pelvis pitch while walking
-        p("load_wait_max", 0.25)    # s: the load gate never holds the swing longer than this
-        p("load_transfer", 0.80)    # fraction of the weight the stance foot must carry before the swing starts
+        p("load_wait_max", 0.60)    # s: the swing gate never holds a swing longer than this
+        p("swing_gate_rate", 0.15)  # rad/s: roll rate must be below this before a swing starts
+        p("swing_gate_roll", 0.04)  # rad: and roll below this
+        p("load_transfer", 0.0)     # foot-load gate (0 = off: with rigid joints the foot loads flicker between feet)
         p("cmd_timeout", 0.5)       # s without /loco/cmd_vel -> command zero
         p("log_file", "")         # optional CSV trace of every control step (debugging/tuning)
 
         self.model = self.data = None
         self.q_meas = {}
         self.v_meas = {}
+        self.eff_meas = {}
         self.q_cmd = {}
         self.sim_t = 0.0
         self.last_step_t = None
@@ -124,6 +127,7 @@ class BalanceController(Node):
         self.hist_meas, self.hist_plan = [], []
         self.contact = {"left": True, "right": True}
         self.R_imu = None
+        self.imu_t = 0.0
         self.acc = np.zeros(3)
         self.est_last_t = None
         self.sole_body = {}
@@ -187,8 +191,11 @@ class BalanceController(Node):
             self.q_meas[n] = q
         for n, v in zip(msg.name, msg.velocity):
             self.v_meas[n] = v
+        for n, e in zip(msg.name, msg.effort):
+            self.eff_meas[n] = e
 
     def on_imu(self, msg):
+        self.imu_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         o = msg.orientation
         self.R_imu = pin.Quaternion(o.w, o.x, o.y, o.z).normalized().toRotationMatrix()
         a = msg.linear_acceleration
@@ -326,21 +333,28 @@ class BalanceController(Node):
             return (0.0, 0.0, 0.0)
         return self.cmd
 
-    def stance_loaded(self):
-        """Load-transfer gate: the foot that will carry the swing phase holds >= `load_transfer` of the weight."""
+    def swing_ready(self):
+        """Swing gate: only lift the swing foot once the body has stopped rolling sideways after the weight shift
+        (roll rate and roll angle small). In simulation both soles carry the load rigidly and the foot force
+        sensors flicker between the feet, so the optional load check (`load_transfer` > 0) is off by default."""
         gen = self.walker.gen
         st = gen.steps[gen.k]
         stance = gen.stance_foot
         if not stance or st.kind != "walk":
             return True
-        for s in ("left", "right"):  # the raw force rings on every impact: low-pass it
-            raw = self.ft[s].force.z if s in self.ft else 0.0
-            self.fz_f[s] = 0.85 * self.fz_f.get(s, raw) + 0.15 * raw
-        fz = self.fz_f
-        total = max(fz["left"], 0.0) + max(fz["right"], 0.0)
-        if total < 0.3 * 9.81 * pin.computeTotalMass(self.model):
-            return False  # no meaningful ground contact reading
-        return max(fz[stance], 0.0) / total >= self.get_parameter("load_transfer").value
+        gp = self.get_parameter
+        if abs(self.gyro[0]) > gp("swing_gate_rate").value or abs(self.rpy[0]) > gp("swing_gate_roll").value:
+            return False
+        if gp("load_transfer").value > 0.0:
+            for s in ("left", "right"):  # the raw force rings on every impact: low-pass it
+                raw = self.ft[s].force.z if s in self.ft else 0.0
+                self.fz_f[s] = 0.85 * self.fz_f.get(s, raw) + 0.15 * raw
+            fz = self.fz_f
+            total = max(fz["left"], 0.0) + max(fz["right"], 0.0)
+            if total < 0.3 * 9.81 * pin.computeTotalMass(self.model):
+                return False  # no meaningful ground contact reading
+            return max(fz[stance], 0.0) / total >= gp("load_transfer").value
+        return True
 
     def walking_step(self, dt):
         gp = lambda n: self.get_parameter(n).value  # noqa: E731
@@ -358,7 +372,7 @@ class BalanceController(Node):
             e_yaw = (self.heading_target - self.imu_yaw() + math.pi) % (2 * math.pi) - math.pi
             wz_c = float(np.clip(gp("heading_kp") * e_yaw, -gp("heading_limit"), gp("heading_limit")))
             cmd = (cmd[0], cmd[1], wz_c)
-        load_ok = self.stance_loaded()
+        load_ok = self.swing_ready()
         if self.walker.gen.waiting_for_load:
             if self.wait_t0 is None:
                 self.wait_t0 = self.now()
@@ -446,7 +460,7 @@ class BalanceController(Node):
         if gp("log_file"):
             if not hasattr(self, "_wlog"):
                 self._wlog = open(gp("log_file") + ".walk.csv", "w")
-                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy,ex,ey,dcm_ex,dcm_ey,adj_x,adj_y,xm_x,xm_y,xp_x,xp_y,pm_x,pm_y,vm_x,vm_y,pp_x,pp_y,vp_x,vp_y\n")
+                self._wlog.write("t,phase,wait,roll,pitch,gx,hr,h,fz_l,fz_r,com_x,com_y,left_z,right_z,ux,uy,ex,ey,dcm_ex,dcm_ey,adj_x,adj_y,xm_x,xm_y,xp_x,xp_y,pm_x,pm_y,vm_x,vm_y,pp_x,pp_y,vp_x,vp_y,imu_lag,eff_lar,eff_rar,eff_lhr,eff_rhr,eff_lap,eff_rap\n")
             fz = {s_: (self.ft[s_].force.z if s_ in self.ft else 0.0) for s_ in ("left", "right")}
             self._wlog.write(f"{self.now():.3f},{st['phase']},{int(self.walker.gen.waiting_for_load)},"
                              f"{self.rpy[0]:.4f},{self.rpy[1]:.4f},{self.gyro[0]:.4f},{hr:.4f},{h:.4f},"
@@ -457,7 +471,10 @@ class BalanceController(Node):
                              f"{(self.xi_meas_log if self.xi_meas_log is not None else (float('nan'),) * 2)[1]:.4f},"
                              f"{self.xi_plan_log[0]:.4f},{self.xi_plan_log[1]:.4f},"
                              + (",".join(f"{v:.4f}" for d in self.dcm_dbg for v in d) if self.dcm_dbg else ",".join(["nan"] * 8))
-                             + "\n")
+                             + f",{self.sim_t - self.imu_t:.4f},"
+                             + ",".join(f"{self.eff_meas.get(j, float('nan')):.2f}" for j in (
+                                 'left_ankle_roll_joint', 'right_ankle_roll_joint', 'left_hip_roll_joint',
+                                 'right_hip_roll_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint')) + "\n")
             self._wlog.flush()
         self.publish(q)
         self.pub_status.publish(String(data="WALKING"))
@@ -523,7 +540,8 @@ class BalanceController(Node):
 
     def publish(self, q):
         self.q_cmd = dict(q)
-        # position reference + zero velocity reference: the joint PD's d-term then damps joint velocity
+        # position reference + zero velocity reference. (A velocity feedforward from the setpoints' own velocity
+        # was tried and made walking much worse with the sensors on: 1 of 10 runs passed, see docs/PLAN.md.)
         self.pub_ref.publish(MultiDOFCommand(dof_names=BODY_JOINTS, values=[float(q[j]) for j in BODY_JOINTS],
                                              values_dot=[0.0] * len(BODY_JOINTS)))
 
