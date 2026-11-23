@@ -252,6 +252,9 @@ Code: `midibot_locomotion` (pure Python library) + a `walk` mode in `midibot_con
     stance (ankle/hip torque, CoP shaping), a shorter single-support phase, or a stronger ankle roll rating.
 - Not done / known limits: the estimate is available for footstep correction but that did not help yet (see the DCM paragraph); the turn is slower than commanded; stepping over obstacles, uneven ground and push recovery by
   stepping are out of scope for this phase.
+- Keyboard teleoperation: `ros2 run midibot_gazebo teleop_wasd.py` (W/S walk forward/back, A/D turn, Q/E sidestep, space stop,
+  +/- speed, X quit). It switches the robot to walk mode, re-sends `/loco/cmd_vel` at 10 Hz (the locomotion unit zeroes
+  it after 0.5 s) and returns the robot to the standing pose on exit. Checked in simulation with scripted keys.
 - Tools: gait timing and walking gains are ROS parameters (`gait_*`, `walk_*`); `ros2 param set
   /balance_controller log_file <prefix>` writes a per-step trace `<prefix>.walk.csv`.
 

@@ -51,6 +51,7 @@ source /opt/ros/jazzy/setup.bash && colcon build --symlink-install && source ins
 ros2 launch midibot_gazebo sim.launch.py          # headless; balance controller on
 ros2 run midibot_gazebo push_test.py              # Phase 2 acceptance (balance + pushes)
 ros2 run midibot_gazebo walk_test.py              # Phase 3 acceptance (walk fwd/back/turn/stop)
+ros2 run midibot_gazebo teleop_wasd.py            # walk the robot with the keyboard (W/S/A/D, Q/E, space, X); run in a terminal
 MIDIBOT_URDF=<generated.urdf> python3 -m pytest src/midibot_locomotion/test   # Phase 3 offline checks
 ros2 launch midibot_gazebo sim.launch.py balance:=false   # then: ros2 run midibot_gazebo check_model.py
 ```
